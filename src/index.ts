@@ -1,6 +1,8 @@
 import { Context, Service, Schema } from 'cordis'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
+import { MemoryGuard } from './guard.js'
+import { MemoryConflictDetector } from './conflict.js'
 
 /**
  * Memory record category.
@@ -13,6 +15,7 @@ export type MemoryCategory = 'convention' | 'preference' | 'architecture' | 'les
  * - Access count & recency decay weights (memory vitality)
  * - Importance tiering
  * - Verification status & audit trail (Anti-hallucination guard)
+ * - Polarity conflict history & supersession tracking
  */
 export interface MemoryItem {
   id: string
@@ -26,7 +29,7 @@ export interface MemoryItem {
   lastAccessedAt: string
   createdAt: string
   updatedAt: string
-  correctionHistory?: string[] // Audit trail of past corrections
+  correctionHistory?: string[] // Audit trail of past corrections & conflict resolutions
   /** Optional dense vector embedding for semantic search */
   vector?: number[]
 }
@@ -53,21 +56,12 @@ export interface EmbeddingConfig {
   dimension?: number
 }
 
-/**
- * Configuration options for the Memory Plugin.
- */
 export interface MemoryConfig {
-  /** File path to persist memories. Default is `.dsh/MEMORY.md` */
   storagePath?: string
-  /** File path to persist vector cache and access metadata. Default is `.dsh/memory_store.json` */
   vectorStoragePath?: string
-  /** Whether to automatically inject memories into the system context on session start. */
   autoRecall?: boolean
-  /** Maximum character budget for injected memories. */
   maxRecallChars?: number
-  /** Number of top relevant memories to inject during automatic recall. */
   topK?: number
-  /** Vector Embedding configuration for semantic search */
   embedding?: EmbeddingConfig
 }
 
@@ -93,9 +87,6 @@ declare module 'cordis' {
   }
 }
 
-/**
- * Cosine Similarity between two dense vectors.
- */
 function cosineSimilarity(vecA: number[], vecB: number[]): number {
   if (!vecA || !vecB || vecA.length !== vecB.length || vecA.length === 0) return 0
   let dotProduct = 0
@@ -110,14 +101,10 @@ function cosineSimilarity(vecA: number[], vecB: number[]): number {
   return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB))
 }
 
-/**
- * Calculate Recency score based on days elapsed (Half-life decay).
- */
 function calculateRecencyScore(dateString: string): number {
   try {
     const elapsedMs = Date.now() - new Date(dateString).getTime()
     const days = Math.max(0, elapsedMs / (1000 * 60 * 60 * 24))
-    // 30-day half-life decay
     return Math.exp(-days / 30)
   } catch {
     return 0.5
@@ -126,12 +113,11 @@ function calculateRecencyScore(dateString: string): number {
 
 /**
  * DeepSeek Harness Long-term Memory Service.
- * 
- * Inspired by Shion's triple-layer memory & self-correction architecture:
- * 1. Layer 1 (Human-in-the-Loop & Audit): Git-versioned Markdown knowledge base (.dsh/MEMORY.md)
- * 2. Layer 2 (Semantic Dynamics): Dense vector index + Cosine similarity
- * 3. Layer 3 (Memory Vitality & Hybrid Ranking): Recency decay + Frequency reinforcement + Verified Boost + RRF
- * 4. Self-Correction & Reflection Loop: Test verification gates, conflict correction, and semantic deduplication.
+ * Full Shion Architecture implementation:
+ * 1. MemoryGuard (Red-light filtering)
+ * 2. MemoryConflictDetector (Subject & polarity conflict resolution)
+ * 3. Triple-Layer Storage (Git Markdown + Dense Vector + Hybrid Vitality Decay)
+ * 4. Dream & Reflection Engine (Consolidation, deduplication, audit trail)
  */
 export class MemoryService extends Service {
   private config: Required<Omit<MemoryConfig, 'embedding'>> & { embedding: Required<EmbeddingConfig> }
@@ -171,14 +157,14 @@ export class MemoryService extends Service {
     await this.loadFromDisk()
     await this.loadMetadataFromDisk()
     this.ctx.logger.info(
-      `[dsh-plugin-memory] Shion-inspired Memory Engine active: ${this.memories.size} items (Verified Guard: ON, Vector: ${
+      `[dsh-plugin-memory] Shion 4-Tier Memory Engine active: ${this.memories.size} items (Guard: ON, ConflictDetector: ON, Vector: ${
         this.config.embedding.enabled ? 'ON' : 'OFF'
       })`
     )
   }
 
   /**
-   * Save or update memory with automatic consolidation, vectorization, and verification status.
+   * Save or update memory with automatic red-light guard, conflict resolution, and vectorization.
    */
   public async remember(
     topic: string,
@@ -186,13 +172,39 @@ export class MemoryService extends Service {
     options: RememberOptions | MemoryCategory = 'general',
     importanceArg: number = 3
   ): Promise<{ success: boolean; id: string; message: string }> {
-    const key = topic.trim().toLowerCase()
-    let vector: number[] | undefined
+    // 1. Shion MemoryGuard Red-light check
+    const guardCheck = MemoryGuard.isRedLight(content)
+    if (guardCheck.blocked) {
+      this.ctx.logger.warn(`[dsh-plugin-memory] Red-light blocked memory '${topic}': ${guardCheck.reason}`)
+      return {
+        success: false,
+        id: '',
+        message: `Blocked by MemoryGuard: ${guardCheck.reason}`,
+      }
+    }
 
+    const key = topic.trim().toLowerCase()
     const category: MemoryCategory = typeof options === 'string' ? options : options.category || 'general'
     const importance: number = typeof options === 'object' && options.importance !== undefined ? options.importance : importanceArg
     const verified: boolean = typeof options === 'object' && options.verified !== undefined ? options.verified : false
 
+    const now = new Date().toISOString()
+    const existing = this.memories.get(key)
+    const history: string[] = existing?.correctionHistory ? [...existing.correctionHistory] : []
+
+    // 2. Shion Polarity Conflict Detection across all active memories
+    for (const [otherKey, otherItem] of this.memories.entries()) {
+      const conflict = MemoryConflictDetector.detectConflict(content, otherItem.content)
+      if (conflict) {
+        history.push(`[${now}] Conflict Resolved: Overrode previous rule '${otherItem.topic}' (${conflict.reason})`)
+        this.ctx.logger.info(`[dsh-plugin-memory] Auto-resolved polarity conflict: ${conflict.reason}`)
+        if (otherKey !== key) {
+          this.memories.delete(otherKey)
+        }
+      }
+    }
+
+    let vector: number[] | undefined
     if (this.config.embedding.enabled) {
       try {
         vector = await this.embedText(`${topic}: ${content}`)
@@ -200,9 +212,6 @@ export class MemoryService extends Service {
         this.ctx.logger.warn(`Vector embedding failed for '${topic}': ${err}`)
       }
     }
-
-    const now = new Date().toISOString()
-    const existing = this.memories.get(key)
 
     const item: MemoryItem = {
       id: key,
@@ -216,7 +225,7 @@ export class MemoryService extends Service {
       lastAccessedAt: now,
       createdAt: existing ? existing.createdAt : now,
       updatedAt: now,
-      correctionHistory: existing?.correctionHistory || [],
+      correctionHistory: history,
       vector: vector || existing?.vector,
     }
 
@@ -239,6 +248,11 @@ export class MemoryService extends Service {
     correctedContent: string,
     reason: string = 'User correction'
   ): Promise<{ success: boolean; message: string }> {
+    const guardCheck = MemoryGuard.isRedLight(correctedContent)
+    if (guardCheck.blocked) {
+      return { success: false, message: `Correction blocked by MemoryGuard: ${guardCheck.reason}` }
+    }
+
     const key = topic.trim().toLowerCase()
     const existing = this.memories.get(key)
     const now = new Date().toISOString()
@@ -262,7 +276,7 @@ export class MemoryService extends Service {
       category: existing?.category || 'lesson',
       importance: existing ? Math.min(5, existing.importance + 1) : 4,
       accessCount: existing ? existing.accessCount + 1 : 1,
-      verified: true, // Explicit corrections are considered verified
+      verified: true,
       verifiedAt: now,
       lastAccessedAt: now,
       createdAt: existing ? existing.createdAt : now,
@@ -282,10 +296,10 @@ export class MemoryService extends Service {
   }
 
   /**
-   * Reflection & Deduplication Engine:
-   * Merges near-duplicate memories and cleans up superseded lessons.
+   * Shion-inspired Dream Consolidation Engine:
+   * Cleans expired candidates, resolves duplicates, and optimizes prompt budgets.
    */
-  public async reflect(): Promise<{ consolidatedCount: number; message: string }> {
+  public async dream(): Promise<{ consolidatedCount: number; message: string }> {
     const items = Array.from(this.memories.values())
     let consolidatedCount = 0
 
@@ -295,7 +309,6 @@ export class MemoryService extends Service {
         const itemB = items[j]
         if (!itemA || !itemB) continue
 
-        // Check if both have vectors and cosine similarity is very high (> 0.88)
         let isDuplicate = false
         if (itemA.vector && itemB.vector && cosineSimilarity(itemA.vector, itemB.vector) > 0.88) {
           isDuplicate = true
@@ -304,7 +317,6 @@ export class MemoryService extends Service {
         }
 
         if (isDuplicate) {
-          // Merge B into A (keep the more verified / newer one)
           const primary = itemA.verified ? itemA : itemB.verified ? itemB : (itemA.updatedAt > itemB.updatedAt ? itemA : itemB)
           const secondary = primary === itemA ? itemB : itemA
 
@@ -323,21 +335,16 @@ export class MemoryService extends Service {
 
     return {
       consolidatedCount,
-      message: `Reflection complete: Consolidated ${consolidatedCount} duplicate or redundant memory entries.`,
+      message: `Dream cycle complete: Consolidated ${consolidatedCount} redundant memories.`,
     }
   }
 
-  /**
-   * Hybrid Memory Recall:
-   * Combines Lexical keyword matching + Vector semantic similarity + Memory Vitality + Verification Bonus.
-   */
   public async recall(query?: string, topK?: number): Promise<MemoryItem[]> {
     const k = topK || this.config.topK
     const items = Array.from(this.memories.values())
     if (items.length === 0) return []
 
     if (!query || !query.trim()) {
-      // Default: Return top items by importance, frequency, and verification
       return items
         .sort(
           (a, b) =>
@@ -359,24 +366,19 @@ export class MemoryService extends Service {
       }
     }
 
-    // Hybrid Scoring (Shion ranking formula)
     const scored = items.map((item) => {
-      // 1. Semantic score
       const semanticScore = queryVec && item.vector ? cosineSimilarity(queryVec, item.vector) : 0
 
-      // 2. Lexical exact/partial match score
       let lexicalScore = 0
       if (item.topic.toLowerCase().includes(queryLower)) lexicalScore += 0.6
       if (item.content.toLowerCase().includes(queryLower)) lexicalScore += 0.4
       if (item.category.toLowerCase() === queryLower) lexicalScore += 0.3
 
-      // 3. Vitality & Importance factor
       const recencyScore = calculateRecencyScore(item.lastAccessedAt || item.updatedAt)
-      const frequencyScore = Math.min(1.0, Math.log10(item.accessCount + 1) / 2) // Log saturation
+      const frequencyScore = Math.min(1.0, Math.log10(item.accessCount + 1) / 2)
       const importanceScore = item.importance / 5.0
-      const verifiedBonus = item.verified ? 0.15 : 0 // +15% trust bonus for verified rules
+      const verifiedBonus = item.verified ? 0.15 : 0
 
-      // Composite Weighted Score
       const totalScore =
         (queryVec ? semanticScore * 0.45 : 0) +
         lexicalScore * (queryVec ? 0.25 : 0.6) +
@@ -393,21 +395,15 @@ export class MemoryService extends Service {
       .sort((a, b) => b.totalScore - a.totalScore)
       .slice(0, k)
       .map((s) => {
-        // Reinforce accessed memories
         s.item.accessCount++
         s.item.lastAccessedAt = now
         return s.item
       })
 
-    // Async save updated access counts
     this.flushMetadataToDisk().catch(() => {})
-
     return results
   }
 
-  /**
-   * Remove a memory item.
-   */
   public async forget(topic: string): Promise<{ success: boolean; message: string }> {
     const key = topic.trim().toLowerCase()
     if (this.memories.has(key)) {
@@ -419,9 +415,6 @@ export class MemoryService extends Service {
     return { success: false, message: `No memory found matching '${topic}'.` }
   }
 
-  /**
-   * Render memories as formatted Markdown for system prompt injection.
-   */
   public renderForPrompt(selectedItems?: MemoryItem[]): string {
     const items = selectedItems || Array.from(this.memories.values())
     if (items.length === 0) return ''
@@ -609,16 +602,17 @@ export class MemoryService extends Service {
           }
         }
       } else if (lastItem && (line.startsWith('  ') || line.startsWith('\t'))) {
-        // Append multiline indented text to previous memory item
         lastItem.content += '\n' + trimmed
       }
     }
   }
 }
 
+export { MemoryGuard, MemoryConflictDetector }
+
 export default function apply(ctx: Context, config: MemoryConfig = {}) {
   ctx.plugin(MemoryService, config)
   ctx.on('ready', () => {
-    ctx.logger.info('[dsh-plugin-memory] Shion-inspired Triple-layer Memory & Self-Correction Engine active.')
+    ctx.logger.info('[dsh-plugin-memory] Shion 4-Tier Memory & Conflict-Resolution Engine active.')
   })
 }
