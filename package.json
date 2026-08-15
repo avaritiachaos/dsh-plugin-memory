@@ -1,0 +1,46 @@
+{
+  "name": "@shion-lab/dsh-plugin-memory",
+  "version": "0.1.0",
+  "description": "Persistent cross-session long-term memory and project knowledge plugin for DeepSeek Harness (dsh).",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "deepseek",
+    "deepseek-harness",
+    "dsh",
+    "cordis",
+    "plugin",
+    "agent",
+    "memory",
+    "long-term-memory",
+    "coding-agent"
+  ],
+  "author": "Shion Lab",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/shion-lab/dsh-plugin-memory.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "peerDependencies": {
+    "cordis": "^3.0.0"
+  },
+  "devDependencies": {
+    "cordis": "^3.18.0",
+    "typescript": "^5.4.5",
+    "@types/node": "^20.12.7"
+  }
+}
