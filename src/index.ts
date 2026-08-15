@@ -434,21 +434,32 @@ export class MemoryService extends Service {
   private parseMarkdown(text: string): void {
     const lines = text.split('\n')
     let currentCategory: MemoryCategory = 'general'
+    let lastItem: MemoryItem | null = null
 
     for (const line of lines) {
       const trimmed = line.trim()
-      if (trimmed.includes('Code Conventions')) currentCategory = 'convention'
-      else if (trimmed.includes('User Preferences')) currentCategory = 'preference'
-      else if (trimmed.includes('Architecture')) currentCategory = 'architecture'
-      else if (trimmed.includes('Past Lessons')) currentCategory = 'lesson'
-      else if (trimmed.startsWith('- **')) {
+      if (!trimmed) continue
+
+      if (trimmed.includes('Code Conventions')) {
+        currentCategory = 'convention'
+        lastItem = null
+      } else if (trimmed.includes('User Preferences')) {
+        currentCategory = 'preference'
+        lastItem = null
+      } else if (trimmed.includes('Architecture')) {
+        currentCategory = 'architecture'
+        lastItem = null
+      } else if (trimmed.includes('Past Lessons')) {
+        currentCategory = 'lesson'
+        lastItem = null
+      } else if (trimmed.startsWith('- **')) {
         const match = trimmed.match(/^- \*\*(.*?)\*\*:\s*(.*)$/)
         if (match) {
           const topic = match[1].trim()
           const content = match[2].trim()
           const key = topic.toLowerCase()
           if (!this.memories.has(key)) {
-            this.memories.set(key, {
+            const item: MemoryItem = {
               id: key,
               topic,
               content,
@@ -458,9 +469,16 @@ export class MemoryService extends Service {
               lastAccessedAt: new Date().toISOString(),
               createdAt: new Date().toISOString(),
               updatedAt: new Date().toISOString(),
-            })
+            }
+            this.memories.set(key, item)
+            lastItem = item
+          } else {
+            lastItem = this.memories.get(key) || null
           }
         }
+      } else if (lastItem && (line.startsWith('  ') || line.startsWith('\t'))) {
+        // Append multiline indented text to previous memory item
+        lastItem.content += '\n' + trimmed
       }
     }
   }
