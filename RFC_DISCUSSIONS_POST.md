@@ -27,7 +27,7 @@ We have implemented a native Cordis plugin that introduces a **Dual-Layer Memory
 
 ### 📦 Repository & Package
 
-- **GitHub Repository**: [https://github.com/shion-lab/dsh-plugin-memory](https://github.com/shion-lab/dsh-plugin-memory)
+- **GitHub Repository**: [https://github.com/avaritiachaos/dsh-plugin-memory](https://github.com/avaritiachaos/dsh-plugin-memory)
 - **NPM Package**: `@shion-lab/dsh-plugin-memory`
 
 ---

@@ -30,7 +30,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/shion-lab/dsh-plugin-memory.git"
+    "url": "https://github.com/avaritiachaos/dsh-plugin-memory.git"
   },
   "publishConfig": {
     "access": "public"
