@@ -4,14 +4,16 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 > **Persistent triple-layer long-term memory engine for DeepSeek Harness (`dsh`), featuring Git-tracked Markdown storage, dense vector embeddings, and access-frequency/recency hybrid recall.**
+> 
+> *Distilled from the battle-tested memory dynamics of desktop companion AI system **Shion (紫苑)**.*
 
 ---
 
-## 🌟 Why `dsh-plugin-memory`?
+## 🌟 Why `dsh-plugin-memory`? / 为什么需要立体持久记忆？
 
 By default, DeepSeek Harness operates in a **stateless** manner: once a session closes, all project-specific architectural rules, user preferences, and hard-earned debugging lessons are lost.
 
-`@shion-lab/dsh-plugin-memory` introduces a **production-grade triple-layer memory architecture** directly adapted from desktop companion agent practices:
+`@shion-lab/dsh-plugin-memory` introduces a **production-grade triple-layer memory architecture** directly adapted from desktop companion agent practices (提炼自伴随式智能体「紫苑」实战记忆体系):
 
 - 📝 **Layer 1: Human-in-the-Loop Git Markdown (`.dsh/MEMORY.md`)**: Team-shareable, version-controlled repository conventions and architecture rules.
 - 🧠 **Layer 2: Dense Vector Semantic Engine (`.dsh/memory_store.json`)**: Dense vector embeddings with Cosine Similarity ranking (OpenAI / Ollama / Local).
