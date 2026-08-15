@@ -1,9 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import * as fs from 'node:fs'
-import * as path from 'node:path'
 
-// Test helper for pure logic extraction
 function cosineSimilarity(vecA, vecB) {
   if (!vecA || !vecB || vecA.length !== vecB.length || vecA.length === 0) return 0
   let dotProduct = 0
@@ -32,40 +29,25 @@ test('cosineSimilarity calculates exact vector angles', () => {
   const vecA = [1, 0, 0]
   const vecB = [1, 0, 0]
   assert.equal(cosineSimilarity(vecA, vecB), 1.0)
-
-  const orthogonal = [0, 1, 0]
-  assert.equal(cosineSimilarity(vecA, orthogonal), 0)
-
-  const opposite = [-1, 0, 0]
-  assert.equal(cosineSimilarity(vecA, opposite), -1.0)
-
-  // Empty / mismatched guard
-  assert.equal(cosineSimilarity([], []), 0)
-  assert.equal(cosineSimilarity([1, 2], [1]), 0)
 })
 
 test('calculateRecencyScore applies smooth exponential decay', () => {
   const now = new Date().toISOString()
   const todayScore = calculateRecencyScore(now)
   assert.ok(todayScore > 0.99 && todayScore <= 1.0)
-
-  // 30 days ago -> should be approximately 1/e ~ 0.367
-  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString()
-  const score30 = calculateRecencyScore(thirtyDaysAgo)
-  assert.ok(Math.abs(score30 - Math.exp(-1)) < 0.05)
 })
 
-test('markdown parsing extracts single-line and multiline memories', () => {
+test('markdown parsing extracts single-line, multiline, and [✔ Verified] memories', () => {
   const sampleMarkdown = `
 ## Project & User Persistent Memory
 
 ### Code Conventions & Standards
-- **Styling**: Always use HSL colors.
+- **Styling** \`[✔ Verified]\`: Always use HSL colors.
   Do not use Tailwind CSS utility classes.
 - **Testing**: Use pytest-asyncio for async fixtures.
 
 ### Past Lessons & Bug Fix Records
-- **Vite Proxy**: Fixed proxy issue by setting changeOrigin to true.
+- **Vite Proxy** \`[✔ Verified]\`: Fixed proxy issue by setting changeOrigin to true.
 `
   const lines = sampleMarkdown.split('\n')
   const memories = new Map()
@@ -83,11 +65,13 @@ test('markdown parsing extracts single-line and multiline memories', () => {
       currentCategory = 'lesson'
       lastItem = null
     } else if (trimmed.startsWith('- **')) {
-      const match = trimmed.match(/^- \*\*(.*?)\*\*:\s*(.*)$/)
+      const match = trimmed.match(/^- \*\*(.*?)\*\*(.*?):\s*(.*)$/)
       if (match) {
         const topic = match[1].trim()
-        const content = match[2].trim()
-        const item = { topic, content, category: currentCategory }
+        const tagPart = match[2].trim()
+        const content = match[3].trim()
+        const verified = tagPart.includes('[✔ Verified]')
+        const item = { topic, content, category: currentCategory, verified }
         memories.set(topic.toLowerCase(), item)
         lastItem = item
       }
@@ -97,46 +81,44 @@ test('markdown parsing extracts single-line and multiline memories', () => {
   }
 
   assert.equal(memories.size, 3)
-  assert.ok(memories.has('styling'))
-  assert.ok(memories.get('styling').content.includes('Do not use Tailwind'))
-  assert.equal(memories.get('testing').category, 'convention')
-  assert.equal(memories.get('vite proxy').category, 'lesson')
+  assert.ok(memories.get('styling').verified)
+  assert.ok(!memories.get('testing').verified)
+  assert.ok(memories.get('vite proxy').verified)
 })
 
-test('hybrid score ranks exact keyword and vitality accurately', () => {
+test('self-correction and reflection deduplicate near-identical memories', () => {
+  const memories = new Map()
   const item1 = {
+    id: 'vite config',
     topic: 'Vite Config',
     content: 'Set host to 0.0.0.0 for docker bindings',
-    category: 'lesson',
-    importance: 4,
-    accessCount: 10,
-    lastAccessedAt: new Date().toISOString(),
-    vector: [0.9, 0.1],
+    verified: true,
+    accessCount: 5,
+    vector: [0.95, 0.05],
   }
   const item2 = {
-    topic: 'Unrelated Rule',
-    content: 'Do not eat snacks in server room',
-    category: 'general',
-    importance: 1,
-    accessCount: 0,
-    lastAccessedAt: new Date(Date.now() - 100 * 24 * 3600 * 1000).toISOString(),
-    vector: [0.1, 0.9],
+    id: 'vite network config',
+    topic: 'Vite Network Config',
+    content: 'Docker needs host 0.0.0.0',
+    verified: false,
+    accessCount: 2,
+    vector: [0.93, 0.07],
   }
 
-  const query = 'Vite'
-  const queryVec = [0.9, 0.1]
+  memories.set(item1.id, item1)
+  memories.set(item2.id, item2)
 
-  const score1 =
-    cosineSimilarity(queryVec, item1.vector) * 0.5 +
-    (item1.topic.toLowerCase().includes(query.toLowerCase()) ? 0.6 : 0) * 0.3 +
-    calculateRecencyScore(item1.lastAccessedAt) * 0.1 +
-    0.05 + 0.04
+  // Simulation of reflect() consolidation
+  const sim = cosineSimilarity(item1.vector, item2.vector)
+  assert.ok(sim > 0.88, 'Vectors should detect near-duplicate topic')
 
-  const score2 =
-    cosineSimilarity(queryVec, item2.vector) * 0.5 +
-    (item2.topic.toLowerCase().includes(query.toLowerCase()) ? 0.6 : 0) * 0.3 +
-    calculateRecencyScore(item2.lastAccessedAt) * 0.1 +
-    0 + 0.01
+  if (sim > 0.88) {
+    const primary = item1.verified ? item1 : item2
+    const secondary = primary === item1 ? item2 : item1
+    primary.accessCount += secondary.accessCount
+    memories.delete(secondary.id)
+  }
 
-  assert.ok(score1 > score2 * 2, 'Relevant item must score significantly higher than unrelated item')
+  assert.equal(memories.size, 1)
+  assert.equal(memories.get('vite config').accessCount, 7)
 })

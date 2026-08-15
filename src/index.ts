@@ -8,10 +8,11 @@ import * as path from 'node:path'
 export type MemoryCategory = 'convention' | 'preference' | 'architecture' | 'lesson' | 'general'
 
 /**
- * Enhanced memory item capturing Shion's memory dynamics:
+ * Enhanced memory item capturing Shion's self-correcting memory dynamics:
  * - Hybrid lexical + vector representations
  * - Access count & recency decay weights (memory vitality)
  * - Importance tiering
+ * - Verification status & audit trail (Anti-hallucination guard)
  */
 export interface MemoryItem {
   id: string
@@ -20,11 +21,21 @@ export interface MemoryItem {
   content: string
   importance: number // 1 (low) to 5 (critical)
   accessCount: number // Incremented on each recall hit
+  verified: boolean // Verified by test run or developer confirmation
+  verifiedAt?: string
   lastAccessedAt: string
   createdAt: string
   updatedAt: string
+  correctionHistory?: string[] // Audit trail of past corrections
   /** Optional dense vector embedding for semantic search */
   vector?: number[]
+}
+
+export interface RememberOptions {
+  category?: MemoryCategory
+  importance?: number
+  verified?: boolean
+  verificationProof?: string
 }
 
 export interface EmbeddingConfig {
@@ -116,10 +127,11 @@ function calculateRecencyScore(dateString: string): number {
 /**
  * DeepSeek Harness Long-term Memory Service.
  * 
- * Inspired by Shion's triple-layer memory architecture:
- * 1. Layer 1 (Human-in-the-Loop): Git-versioned Markdown knowledge base (.dsh/MEMORY.md)
+ * Inspired by Shion's triple-layer memory & self-correction architecture:
+ * 1. Layer 1 (Human-in-the-Loop & Audit): Git-versioned Markdown knowledge base (.dsh/MEMORY.md)
  * 2. Layer 2 (Semantic Dynamics): Dense vector index + Cosine similarity
- * 3. Layer 3 (Memory Vitality & Hybrid Ranking): Recency decay + Frequency reinforcement + Reciprocal Rank Fusion
+ * 3. Layer 3 (Memory Vitality & Hybrid Ranking): Recency decay + Frequency reinforcement + Verified Boost + RRF
+ * 4. Self-Correction & Reflection Loop: Test verification gates, conflict correction, and semantic deduplication.
  */
 export class MemoryService extends Service {
   private config: Required<Omit<MemoryConfig, 'embedding'>> & { embedding: Required<EmbeddingConfig> }
@@ -159,23 +171,27 @@ export class MemoryService extends Service {
     await this.loadFromDisk()
     await this.loadMetadataFromDisk()
     this.ctx.logger.info(
-      `[dsh-plugin-memory] Memory engine active: ${this.memories.size} items (Vector Semantic Engine: ${
+      `[dsh-plugin-memory] Shion-inspired Memory Engine active: ${this.memories.size} items (Verified Guard: ON, Vector: ${
         this.config.embedding.enabled ? 'ON' : 'OFF'
-      }, Hybrid Fusion: ON)`
+      })`
     )
   }
 
   /**
-   * Save or update memory with automatic consolidation, vectorization, and vitality initialization.
+   * Save or update memory with automatic consolidation, vectorization, and verification status.
    */
   public async remember(
     topic: string,
     content: string,
-    category: MemoryCategory = 'general',
-    importance: number = 3
+    options: RememberOptions | MemoryCategory = 'general',
+    importanceArg: number = 3
   ): Promise<{ success: boolean; id: string; message: string }> {
     const key = topic.trim().toLowerCase()
     let vector: number[] | undefined
+
+    const category: MemoryCategory = typeof options === 'string' ? options : options.category || 'general'
+    const importance: number = typeof options === 'object' && options.importance !== undefined ? options.importance : importanceArg
+    const verified: boolean = typeof options === 'object' && options.verified !== undefined ? options.verified : false
 
     if (this.config.embedding.enabled) {
       try {
@@ -195,9 +211,12 @@ export class MemoryService extends Service {
       category,
       importance: Math.min(5, Math.max(1, importance)),
       accessCount: existing ? existing.accessCount + 1 : 1,
+      verified: verified || (existing?.verified ?? false),
+      verifiedAt: verified ? now : existing?.verifiedAt,
       lastAccessedAt: now,
       createdAt: existing ? existing.createdAt : now,
       updatedAt: now,
+      correctionHistory: existing?.correctionHistory || [],
       vector: vector || existing?.vector,
     }
 
@@ -208,13 +227,109 @@ export class MemoryService extends Service {
     return {
       success: true,
       id: key,
-      message: `Remembered '${topic}' under [${category}] (importance: ${importance}/5, vector: ${vector ? 'yes' : 'cached/no'}).`,
+      message: `Remembered '${topic}' under [${category}] (verified: ${item.verified ? 'YES' : 'NO'}, importance: ${importance}/5).`,
+    }
+  }
+
+  /**
+   * Explicitly correct or supersede an existing memory, preventing compounding errors.
+   */
+  public async correct(
+    topic: string,
+    correctedContent: string,
+    reason: string = 'User correction'
+  ): Promise<{ success: boolean; message: string }> {
+    const key = topic.trim().toLowerCase()
+    const existing = this.memories.get(key)
+    const now = new Date().toISOString()
+
+    const previousContent = existing ? existing.content : '(new)'
+    const historyEntry = `[${now}] Corrected: "${previousContent.slice(0, 50)}..." -> "${correctedContent.slice(0, 50)}..." (Reason: ${reason})`
+
+    let vector: number[] | undefined
+    if (this.config.embedding.enabled) {
+      try {
+        vector = await this.embedText(`${topic}: ${correctedContent}`)
+      } catch (err) {
+        this.ctx.logger.warn(`Vector update failed for '${topic}': ${err}`)
+      }
+    }
+
+    const item: MemoryItem = {
+      id: key,
+      topic: topic.trim(),
+      content: correctedContent.trim(),
+      category: existing?.category || 'lesson',
+      importance: existing ? Math.min(5, existing.importance + 1) : 4,
+      accessCount: existing ? existing.accessCount + 1 : 1,
+      verified: true, // Explicit corrections are considered verified
+      verifiedAt: now,
+      lastAccessedAt: now,
+      createdAt: existing ? existing.createdAt : now,
+      updatedAt: now,
+      correctionHistory: [...(existing?.correctionHistory || []), historyEntry],
+      vector: vector || existing?.vector,
+    }
+
+    this.memories.set(key, item)
+    await this.flushToDisk()
+    await this.flushMetadataToDisk()
+
+    return {
+      success: true,
+      message: `Successfully corrected memory for '${topic}'. Marked as verified.`,
+    }
+  }
+
+  /**
+   * Reflection & Deduplication Engine:
+   * Merges near-duplicate memories and cleans up superseded lessons.
+   */
+  public async reflect(): Promise<{ consolidatedCount: number; message: string }> {
+    const items = Array.from(this.memories.values())
+    let consolidatedCount = 0
+
+    for (let i = 0; i < items.length; i++) {
+      for (let j = i + 1; j < items.length; j++) {
+        const itemA = items[i]
+        const itemB = items[j]
+        if (!itemA || !itemB) continue
+
+        // Check if both have vectors and cosine similarity is very high (> 0.88)
+        let isDuplicate = false
+        if (itemA.vector && itemB.vector && cosineSimilarity(itemA.vector, itemB.vector) > 0.88) {
+          isDuplicate = true
+        } else if (itemA.topic.toLowerCase() === itemB.topic.toLowerCase()) {
+          isDuplicate = true
+        }
+
+        if (isDuplicate) {
+          // Merge B into A (keep the more verified / newer one)
+          const primary = itemA.verified ? itemA : itemB.verified ? itemB : (itemA.updatedAt > itemB.updatedAt ? itemA : itemB)
+          const secondary = primary === itemA ? itemB : itemA
+
+          primary.accessCount += secondary.accessCount
+          primary.content = `${primary.content} (Consolidated: ${secondary.content})`
+          this.memories.delete(secondary.id)
+          consolidatedCount++
+        }
+      }
+    }
+
+    if (consolidatedCount > 0) {
+      await this.flushToDisk()
+      await this.flushMetadataToDisk()
+    }
+
+    return {
+      consolidatedCount,
+      message: `Reflection complete: Consolidated ${consolidatedCount} duplicate or redundant memory entries.`,
     }
   }
 
   /**
    * Hybrid Memory Recall:
-   * Combines Lexical keyword matching + Vector semantic similarity + Memory Vitality (recency/frequency).
+   * Combines Lexical keyword matching + Vector semantic similarity + Memory Vitality + Verification Bonus.
    */
   public async recall(query?: string, topK?: number): Promise<MemoryItem[]> {
     const k = topK || this.config.topK
@@ -222,9 +337,13 @@ export class MemoryService extends Service {
     if (items.length === 0) return []
 
     if (!query || !query.trim()) {
-      // Default: Return top items by importance and frequency
+      // Default: Return top items by importance, frequency, and verification
       return items
-        .sort((a, b) => b.importance * 2 + Math.log(b.accessCount + 1) - (a.importance * 2 + Math.log(a.accessCount + 1)))
+        .sort(
+          (a, b) =>
+            b.importance * 2 + (b.verified ? 2 : 0) + Math.log(b.accessCount + 1) -
+            (a.importance * 2 + (a.verified ? 2 : 0) + Math.log(a.accessCount + 1))
+        )
         .slice(0, k)
     }
 
@@ -255,14 +374,16 @@ export class MemoryService extends Service {
       const recencyScore = calculateRecencyScore(item.lastAccessedAt || item.updatedAt)
       const frequencyScore = Math.min(1.0, Math.log10(item.accessCount + 1) / 2) // Log saturation
       const importanceScore = item.importance / 5.0
+      const verifiedBonus = item.verified ? 0.15 : 0 // +15% trust bonus for verified rules
 
       // Composite Weighted Score
       const totalScore =
-        (queryVec ? semanticScore * 0.5 : 0) +
-        lexicalScore * (queryVec ? 0.3 : 0.7) +
+        (queryVec ? semanticScore * 0.45 : 0) +
+        lexicalScore * (queryVec ? 0.25 : 0.6) +
         recencyScore * 0.1 +
         frequencyScore * 0.05 +
-        importanceScore * 0.05
+        importanceScore * 0.05 +
+        verifiedBonus
 
       return { item, totalScore }
     })
@@ -314,7 +435,8 @@ export class MemoryService extends Service {
     }
 
     for (const item of items) {
-      sections[item.category].push(`- **${item.topic}**: ${item.content}`)
+      const verifiedTag = item.verified ? ' `[✔ Verified]`' : ''
+      sections[item.category].push(`- **${item.topic}**${verifiedTag}: ${item.content}`)
     }
 
     let output = '## Project & User Persistent Memory (Active Knowledge)\n'
@@ -391,6 +513,9 @@ export class MemoryService extends Service {
           if (meta.vector) item.vector = meta.vector
           if (meta.accessCount) item.accessCount = meta.accessCount
           if (meta.importance) item.importance = meta.importance
+          if (meta.verified !== undefined) item.verified = meta.verified
+          if (meta.verifiedAt) item.verifiedAt = meta.verifiedAt
+          if (meta.correctionHistory) item.correctionHistory = meta.correctionHistory
           if (meta.lastAccessedAt) item.lastAccessedAt = meta.lastAccessedAt
           if (meta.createdAt) item.createdAt = meta.createdAt
         }
@@ -420,6 +545,9 @@ export class MemoryService extends Service {
           vector: item.vector,
           accessCount: item.accessCount,
           importance: item.importance,
+          verified: item.verified,
+          verifiedAt: item.verifiedAt,
+          correctionHistory: item.correctionHistory,
           lastAccessedAt: item.lastAccessedAt,
           createdAt: item.createdAt,
           updatedAt: item.updatedAt,
@@ -453,11 +581,14 @@ export class MemoryService extends Service {
         currentCategory = 'lesson'
         lastItem = null
       } else if (trimmed.startsWith('- **')) {
-        const match = trimmed.match(/^- \*\*(.*?)\*\*:\s*(.*)$/)
+        const match = trimmed.match(/^- \*\*(.*?)\*\*(.*?):\s*(.*)$/)
         if (match) {
           const topic = match[1].trim()
-          const content = match[2].trim()
+          const tagPart = match[2].trim()
+          const content = match[3].trim()
+          const isVerified = tagPart.includes('[✔ Verified]')
           const key = topic.toLowerCase()
+
           if (!this.memories.has(key)) {
             const item: MemoryItem = {
               id: key,
@@ -466,6 +597,7 @@ export class MemoryService extends Service {
               category: currentCategory,
               importance: 3,
               accessCount: 1,
+              verified: isVerified,
               lastAccessedAt: new Date().toISOString(),
               createdAt: new Date().toISOString(),
               updatedAt: new Date().toISOString(),
@@ -487,6 +619,6 @@ export class MemoryService extends Service {
 export default function apply(ctx: Context, config: MemoryConfig = {}) {
   ctx.plugin(MemoryService, config)
   ctx.on('ready', () => {
-    ctx.logger.info('[dsh-plugin-memory] Shion-inspired Triple-layer Memory Engine active.')
+    ctx.logger.info('[dsh-plugin-memory] Shion-inspired Triple-layer Memory & Self-Correction Engine active.')
   })
 }
