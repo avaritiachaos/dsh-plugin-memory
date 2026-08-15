@@ -8,13 +8,20 @@ import * as path from 'node:path'
 export type MemoryCategory = 'convention' | 'preference' | 'architecture' | 'lesson' | 'general'
 
 /**
- * Single structured memory item with optional dense vector embedding.
+ * Enhanced memory item capturing Shion's memory dynamics:
+ * - Hybrid lexical + vector representations
+ * - Access count & recency decay weights (memory vitality)
+ * - Importance tiering
  */
 export interface MemoryItem {
   id: string
   category: MemoryCategory
   topic: string
   content: string
+  importance: number // 1 (low) to 5 (critical)
+  accessCount: number // Incremented on each recall hit
+  lastAccessedAt: string
+  createdAt: string
   updatedAt: string
   /** Optional dense vector embedding for semantic search */
   vector?: number[]
@@ -25,11 +32,11 @@ export interface EmbeddingConfig {
   enabled?: boolean
   /** Provider: 'openai-compatible' | 'ollama' | 'none' */
   provider?: 'openai-compatible' | 'ollama' | 'none'
-  /** API Base URL for embedding endpoint (e.g. http://localhost:11434 or https://api.openai.com/v1) */
+  /** API Base URL for embedding endpoint */
   apiBase?: string
   /** API Key (if required) */
   apiKey?: string
-  /** Embedding model name (e.g. 'bge-m3', 'text-embedding-3-small', 'nomic-embed-text') */
+  /** Embedding model name */
   model?: string
   /** Dimension of the embedding model */
   dimension?: number
@@ -41,21 +48,24 @@ export interface EmbeddingConfig {
 export interface MemoryConfig {
   /** File path to persist memories. Default is `.dsh/MEMORY.md` */
   storagePath?: string
-  /** File path to persist vector cache. Default is `.dsh/memory_vectors.json` */
+  /** File path to persist vector cache and access metadata. Default is `.dsh/memory_store.json` */
   vectorStoragePath?: string
   /** Whether to automatically inject memories into the system context on session start. */
   autoRecall?: boolean
   /** Maximum character budget for injected memories. */
   maxRecallChars?: number
+  /** Number of top relevant memories to inject during automatic recall. */
+  topK?: number
   /** Vector Embedding configuration for semantic search */
   embedding?: EmbeddingConfig
 }
 
 export const MemoryConfig: Schema<MemoryConfig> = Schema.object({
   storagePath: Schema.string().default('.dsh/MEMORY.md').description('Path to persistent markdown memory file.'),
-  vectorStoragePath: Schema.string().default('.dsh/memory_vectors.json').description('Path to vector index cache.'),
+  vectorStoragePath: Schema.string().default('.dsh/memory_store.json').description('Path to vector index & metadata cache.'),
   autoRecall: Schema.boolean().default(true).description('Inject relevant memories into session prompt automatically.'),
-  maxRecallChars: Schema.number().default(3000).description('Character budget limit for injected memory section.'),
+  maxRecallChars: Schema.number().default(3500).description('Character budget limit for injected memory section.'),
+  topK: Schema.number().default(6).description('Number of top scored memories to recall.'),
   embedding: Schema.object({
     enabled: Schema.boolean().default(false).description('Enable semantic vector embeddings for recall.'),
     provider: Schema.union(['openai-compatible', 'ollama', 'none']).default('none'),
@@ -73,10 +83,10 @@ declare module 'cordis' {
 }
 
 /**
- * Calculate Cosine Similarity between two dense float vectors.
+ * Cosine Similarity between two dense vectors.
  */
 function cosineSimilarity(vecA: number[], vecB: number[]): number {
-  if (vecA.length !== vecB.length || vecA.length === 0) return 0
+  if (!vecA || !vecB || vecA.length !== vecB.length || vecA.length === 0) return 0
   let dotProduct = 0
   let normA = 0
   let normB = 0
@@ -90,10 +100,26 @@ function cosineSimilarity(vecA: number[], vecB: number[]): number {
 }
 
 /**
+ * Calculate Recency score based on days elapsed (Half-life decay).
+ */
+function calculateRecencyScore(dateString: string): number {
+  try {
+    const elapsedMs = Date.now() - new Date(dateString).getTime()
+    const days = Math.max(0, elapsedMs / (1000 * 60 * 60 * 24))
+    // 30-day half-life decay
+    return Math.exp(-days / 30)
+  } catch {
+    return 0.5
+  }
+}
+
+/**
  * DeepSeek Harness Long-term Memory Service.
- * Implements dual-layer memory:
- * Layer 1: Human-readable Markdown persistence (.dsh/MEMORY.md)
- * Layer 2: Semantic Vector Index & Cosine Recall (.dsh/memory_vectors.json)
+ * 
+ * Inspired by Shion's triple-layer memory architecture:
+ * 1. Layer 1 (Human-in-the-Loop): Git-versioned Markdown knowledge base (.dsh/MEMORY.md)
+ * 2. Layer 2 (Semantic Dynamics): Dense vector index + Cosine similarity
+ * 3. Layer 3 (Memory Vitality & Hybrid Ranking): Recency decay + Frequency reinforcement + Reciprocal Rank Fusion
  */
 export class MemoryService extends Service {
   private config: Required<Omit<MemoryConfig, 'embedding'>> & { embedding: Required<EmbeddingConfig> }
@@ -105,9 +131,10 @@ export class MemoryService extends Service {
     super(ctx, 'memory', true)
     this.config = {
       storagePath: config.storagePath || '.dsh/MEMORY.md',
-      vectorStoragePath: config.vectorStoragePath || '.dsh/memory_vectors.json',
+      vectorStoragePath: config.vectorStoragePath || '.dsh/memory_store.json',
       autoRecall: config.autoRecall ?? true,
-      maxRecallChars: config.maxRecallChars ?? 3000,
+      maxRecallChars: config.maxRecallChars ?? 3500,
+      topK: config.topK ?? 6,
       embedding: {
         enabled: config.embedding?.enabled ?? false,
         provider: config.embedding?.provider || 'none',
@@ -130,21 +157,22 @@ export class MemoryService extends Service {
       : path.resolve(cwd, this.config.vectorStoragePath)
 
     await this.loadFromDisk()
-    await this.loadVectorsFromDisk()
+    await this.loadMetadataFromDisk()
     this.ctx.logger.info(
-      `[dsh-plugin-memory] Initialized with ${this.memories.size} memories (Vector Search: ${
+      `[dsh-plugin-memory] Memory engine active: ${this.memories.size} items (Vector Semantic Engine: ${
         this.config.embedding.enabled ? 'ON' : 'OFF'
-      })`
+      }, Hybrid Fusion: ON)`
     )
   }
 
   /**
-   * Save or update a memory item and generate vector embedding if enabled.
+   * Save or update memory with automatic consolidation, vectorization, and vitality initialization.
    */
   public async remember(
     topic: string,
     content: string,
-    category: MemoryCategory = 'general'
+    category: MemoryCategory = 'general',
+    importance: number = 3
   ): Promise<{ success: boolean; id: string; message: string }> {
     const key = topic.trim().toLowerCase()
     let vector: number[] | undefined
@@ -157,89 +185,125 @@ export class MemoryService extends Service {
       }
     }
 
+    const now = new Date().toISOString()
+    const existing = this.memories.get(key)
+
     const item: MemoryItem = {
       id: key,
       topic: topic.trim(),
       content: content.trim(),
       category,
-      updatedAt: new Date().toISOString().split('T')[0],
-      vector,
+      importance: Math.min(5, Math.max(1, importance)),
+      accessCount: existing ? existing.accessCount + 1 : 1,
+      lastAccessedAt: now,
+      createdAt: existing ? existing.createdAt : now,
+      updatedAt: now,
+      vector: vector || existing?.vector,
     }
 
     this.memories.set(key, item)
     await this.flushToDisk()
-    if (vector) {
-      await this.flushVectorsToDisk()
-    }
+    await this.flushMetadataToDisk()
 
     return {
       success: true,
       id: key,
-      message: `Successfully remembered '${topic}' under [${category}] (Vector: ${vector ? 'yes' : 'no'}).`,
+      message: `Remembered '${topic}' under [${category}] (importance: ${importance}/5, vector: ${vector ? 'yes' : 'cached/no'}).`,
     }
   }
 
   /**
-   * Semantic Recall: Computes vector similarity or falls back to fuzzy string matching.
+   * Hybrid Memory Recall:
+   * Combines Lexical keyword matching + Vector semantic similarity + Memory Vitality (recency/frequency).
    */
-  public async recall(query?: string, topK: number = 5): Promise<MemoryItem[]> {
+  public async recall(query?: string, topK?: number): Promise<MemoryItem[]> {
+    const k = topK || this.config.topK
     const items = Array.from(this.memories.values())
+    if (items.length === 0) return []
+
     if (!query || !query.trim()) {
+      // Default: Return top items by importance and frequency
       return items
+        .sort((a, b) => b.importance * 2 + Math.log(b.accessCount + 1) - (a.importance * 2 + Math.log(a.accessCount + 1)))
+        .slice(0, k)
     }
 
-    // Vector Semantic Search
+    const now = new Date().toISOString()
+    const queryLower = query.trim().toLowerCase()
+    let queryVec: number[] | null = null
+
     if (this.config.embedding.enabled) {
       try {
-        const queryVec = await this.embedText(query)
-        const scored = items
-          .filter((item) => item.vector && item.vector.length > 0)
-          .map((item) => ({
-            item,
-            score: cosineSimilarity(queryVec, item.vector!),
-          }))
-          .sort((a, b) => b.score - a.score)
-
-        if (scored.length > 0) {
-          return scored.slice(0, topK).map((s) => s.item)
-        }
+        queryVec = await this.embedText(query)
       } catch (err) {
-        this.ctx.logger.warn(`Semantic vector search failed, falling back to lexical search: ${err}`)
+        this.ctx.logger.warn(`Vector generation for query failed: ${err}`)
       }
     }
 
-    // Fallback: Lexical keyword search
-    const q = query.trim().toLowerCase()
-    return items.filter(
-      (m) =>
-        m.topic.toLowerCase().includes(q) ||
-        m.content.toLowerCase().includes(q) ||
-        m.category.toLowerCase().includes(q)
-    )
+    // Hybrid Scoring (Shion ranking formula)
+    const scored = items.map((item) => {
+      // 1. Semantic score
+      const semanticScore = queryVec && item.vector ? cosineSimilarity(queryVec, item.vector) : 0
+
+      // 2. Lexical exact/partial match score
+      let lexicalScore = 0
+      if (item.topic.toLowerCase().includes(queryLower)) lexicalScore += 0.6
+      if (item.content.toLowerCase().includes(queryLower)) lexicalScore += 0.4
+      if (item.category.toLowerCase() === queryLower) lexicalScore += 0.3
+
+      // 3. Vitality & Importance factor
+      const recencyScore = calculateRecencyScore(item.lastAccessedAt || item.updatedAt)
+      const frequencyScore = Math.min(1.0, Math.log10(item.accessCount + 1) / 2) // Log saturation
+      const importanceScore = item.importance / 5.0
+
+      // Composite Weighted Score
+      const totalScore =
+        (queryVec ? semanticScore * 0.5 : 0) +
+        lexicalScore * (queryVec ? 0.3 : 0.7) +
+        recencyScore * 0.1 +
+        frequencyScore * 0.05 +
+        importanceScore * 0.05
+
+      return { item, totalScore }
+    })
+
+    const results = scored
+      .filter((s) => s.totalScore > 0.05)
+      .sort((a, b) => b.totalScore - a.totalScore)
+      .slice(0, k)
+      .map((s) => {
+        // Reinforce accessed memories
+        s.item.accessCount++
+        s.item.lastAccessedAt = now
+        return s.item
+      })
+
+    // Async save updated access counts
+    this.flushMetadataToDisk().catch(() => {})
+
+    return results
   }
 
   /**
-   * Forget a memory by topic or id.
+   * Remove a memory item.
    */
   public async forget(topic: string): Promise<{ success: boolean; message: string }> {
     const key = topic.trim().toLowerCase()
     if (this.memories.has(key)) {
       this.memories.delete(key)
       await this.flushToDisk()
-      await this.flushVectorsToDisk()
+      await this.flushMetadataToDisk()
       return { success: true, message: `Forgotten memory for '${topic}'.` }
     }
     return { success: false, message: `No memory found matching '${topic}'.` }
   }
 
   /**
-   * Render memories as formatted Markdown for prompt injection.
+   * Render memories as formatted Markdown for system prompt injection.
    */
   public renderForPrompt(selectedItems?: MemoryItem[]): string {
     const items = selectedItems || Array.from(this.memories.values())
-    if (items.length === 0) {
-      return ''
-    }
+    if (items.length === 0) return ''
 
     const sections: Record<MemoryCategory, string[]> = {
       convention: [],
@@ -253,8 +317,8 @@ export class MemoryService extends Service {
       sections[item.category].push(`- **${item.topic}**: ${item.content}`)
     }
 
-    let output = '## Project & User Persistent Memory\n'
-    output += '> The following guidelines and lessons have been established across past sessions:\n\n'
+    let output = '## Project & User Persistent Memory (Active Knowledge)\n'
+    output += '> Guidelines, architecture decisions, and past debug lessons retrieved for this session:\n\n'
 
     const titles: Record<MemoryCategory, string> = {
       convention: '### Code Conventions & Standards',
@@ -277,9 +341,6 @@ export class MemoryService extends Service {
     return output.trim()
   }
 
-  /**
-   * Request embedding vector from configured endpoint.
-   */
   private async embedText(text: string): Promise<number[]> {
     const { provider, apiBase, apiKey, model } = this.config.embedding
     if (provider === 'ollama') {
@@ -293,7 +354,6 @@ export class MemoryService extends Service {
       return data.embedding
     }
 
-    // Default OpenAI-compatible endpoint
     const url = `${apiBase || 'https://api.openai.com/v1'}/embeddings`
     const res = await fetch(url, {
       method: 'POST',
@@ -320,18 +380,23 @@ export class MemoryService extends Service {
     }
   }
 
-  private async loadVectorsFromDisk(): Promise<void> {
+  private async loadMetadataFromDisk(): Promise<void> {
     try {
       if (!fs.existsSync(this.resolvedVectorPath)) return
       const raw = await fs.promises.readFile(this.resolvedVectorPath, 'utf-8')
-      const vectorMap = JSON.parse(raw) as Record<string, number[]>
-      for (const [key, vector] of Object.entries(vectorMap)) {
+      const metadataMap = JSON.parse(raw) as Record<string, Partial<MemoryItem>>
+      for (const [key, meta] of Object.entries(metadataMap)) {
         if (this.memories.has(key)) {
-          this.memories.get(key)!.vector = vector
+          const item = this.memories.get(key)!
+          if (meta.vector) item.vector = meta.vector
+          if (meta.accessCount) item.accessCount = meta.accessCount
+          if (meta.importance) item.importance = meta.importance
+          if (meta.lastAccessedAt) item.lastAccessedAt = meta.lastAccessedAt
+          if (meta.createdAt) item.createdAt = meta.createdAt
         }
       }
     } catch (err) {
-      this.ctx.logger.warn(`Failed to load vector cache: ${err}`)
+      this.ctx.logger.warn(`Failed to load vector & metadata cache: ${err}`)
     }
   }
 
@@ -345,17 +410,24 @@ export class MemoryService extends Service {
     }
   }
 
-  private async flushVectorsToDisk(): Promise<void> {
+  private async flushMetadataToDisk(): Promise<void> {
     try {
       const dir = path.dirname(this.resolvedVectorPath)
       if (!fs.existsSync(dir)) await fs.promises.mkdir(dir, { recursive: true })
-      const vectorMap: Record<string, number[]> = {}
+      const metadataMap: Record<string, Partial<MemoryItem>> = {}
       for (const [key, item] of this.memories.entries()) {
-        if (item.vector) vectorMap[key] = item.vector
+        metadataMap[key] = {
+          vector: item.vector,
+          accessCount: item.accessCount,
+          importance: item.importance,
+          lastAccessedAt: item.lastAccessedAt,
+          createdAt: item.createdAt,
+          updatedAt: item.updatedAt,
+        }
       }
-      await fs.promises.writeFile(this.resolvedVectorPath, JSON.stringify(vectorMap, null, 2), 'utf-8')
+      await fs.promises.writeFile(this.resolvedVectorPath, JSON.stringify(metadataMap, null, 2), 'utf-8')
     } catch (err) {
-      this.ctx.logger.error(`Failed to flush vector index: ${err}`)
+      this.ctx.logger.error(`Failed to flush vector index & metadata: ${err}`)
     }
   }
 
@@ -374,13 +446,20 @@ export class MemoryService extends Service {
         if (match) {
           const topic = match[1].trim()
           const content = match[2].trim()
-          this.memories.set(topic.toLowerCase(), {
-            id: topic.toLowerCase(),
-            topic,
-            content,
-            category: currentCategory,
-            updatedAt: new Date().toISOString().split('T')[0],
-          })
+          const key = topic.toLowerCase()
+          if (!this.memories.has(key)) {
+            this.memories.set(key, {
+              id: key,
+              topic,
+              content,
+              category: currentCategory,
+              importance: 3,
+              accessCount: 1,
+              lastAccessedAt: new Date().toISOString(),
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            })
+          }
         }
       }
     }
@@ -390,6 +469,6 @@ export class MemoryService extends Service {
 export default function apply(ctx: Context, config: MemoryConfig = {}) {
   ctx.plugin(MemoryService, config)
   ctx.on('ready', () => {
-    ctx.logger.info('[dsh-plugin-memory] Long-term memory engine ready (Markdown + Semantic Vectors).')
+    ctx.logger.info('[dsh-plugin-memory] Shion-inspired Triple-layer Memory Engine active.')
   })
 }

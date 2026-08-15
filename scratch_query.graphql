@@ -1,0 +1,11 @@
+query {
+  repository(owner: "deepseek-ai", name: "deepseek-harness") {
+    id
+    discussionCategories(first: 10) {
+      nodes {
+        id
+        name
+      }
+    }
+  }
+}

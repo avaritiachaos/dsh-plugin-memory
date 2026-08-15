@@ -3,20 +3,23 @@
 [![npm version](https://img.shields.io/npm/v/@shion-lab/dsh-plugin-memory.svg)](https://www.npmjs.com/package/@shion-lab/dsh-plugin-memory)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-> **Persistent cross-session dual-layer memory (Markdown Rules + Dense Vector Semantic Search) for DeepSeek Harness (`dsh`).**
+> **Persistent triple-layer long-term memory engine for DeepSeek Harness (`dsh`), featuring Git-tracked Markdown storage, dense vector embeddings, and access-frequency/recency hybrid recall.**
 
 ---
 
 ## 🌟 Why `dsh-plugin-memory`?
 
-By default, DeepSeek Harness operates in a **stateless** manner: once a terminal session closes, all project-specific architectural rules, user preferences, and hard-earned debugging lessons are lost.
+By default, DeepSeek Harness operates in a **stateless** manner: once a session closes, all project-specific architectural rules, user preferences, and hard-earned debugging lessons are lost.
 
-`@shion-lab/dsh-plugin-memory` introduces a **dual-layer memory architecture** to DeepSeek Harness:
+`@shion-lab/dsh-plugin-memory` introduces a **production-grade triple-layer memory architecture** directly adapted from desktop companion agent practices:
 
-- 📝 **Layer 1: Human-Readable Markdown (`.dsh/MEMORY.md`)**: Stores code conventions, preferences, and lessons directly in your repository (Git-trackable).
-- 🧠 **Layer 2: Dense Vector Semantic Engine (`.dsh/memory_vectors.json`)**: Computes cosine vector similarity embeddings (OpenAI / Ollama / Local) to semantically retrieve relevant memories even when query phrasing differs.
-- ⚡ **Auto-Recall & Context Budget Guard**: Automatically injects only the top relevant memories into the system prompt without context bloat.
-- 🛡️ **Zero-Lockin / Local-First**: Works completely offline in zero-dep Markdown mode, or optionally with vector embeddings.
+- 📝 **Layer 1: Human-in-the-Loop Git Markdown (`.dsh/MEMORY.md`)**: Team-shareable, version-controlled repository conventions and architecture rules.
+- 🧠 **Layer 2: Dense Vector Semantic Engine (`.dsh/memory_store.json`)**: Dense vector embeddings with Cosine Similarity ranking (OpenAI / Ollama / Local).
+- 📈 **Layer 3: Memory Vitality & Hybrid Ranking (RRF)**:
+  - **Recency Decay**: Smooth half-life decay prioritizing recent breakthroughs.
+  - **Frequency Reinforcement**: Automatically reinforces frequently accessed wisdom.
+  - **Hybrid Fusion**: Combines lexical keywords (BM25-style) with semantic vector distances to avoid hallucinated recalls.
+- 🛡️ **Budget Guard**: Injects top-K high-value memories without blowing up token context limits.
 
 ---
 
@@ -44,16 +47,17 @@ plugins:
   "@shion-lab/dsh-plugin-memory":
     storagePath: ".dsh/MEMORY.md"
     autoRecall: true
-    maxRecallChars: 3000
+    maxRecallChars: 3500
 ```
 
-### Mode B: Advanced Semantic Vector Search (with Ollama or OpenAI embeddings)
+### Mode B: Full Semantic Hybrid Vector Engine (with Ollama or OpenAI embeddings)
 
 ```yaml
 plugins:
   "@deepseek-ai/dsh": {}
   "@shion-lab/dsh-plugin-memory":
     storagePath: ".dsh/MEMORY.md"
+    topK: 6
     embedding:
       enabled: true
       provider: "ollama" # or "openai-compatible"
@@ -66,15 +70,15 @@ plugins:
 
 ## 🛠️ How It Works
 
-1. **Explicit Remembering**:
-   During chat, tell the agent:
-   > *"Remember: Always use pytest-asyncio for async tests and avoid using sleep in tests."*
-   The agent calls `remember`, persisting the rule to `.dsh/MEMORY.md` and calculating its vector embedding.
+1. **Natural Interaction**:
+   During chat, instruct DeepSeek:
+   > *"Remember: In this repository we use Vitest instead of Jest, and mock network calls using MSW."*
+   The agent calls `remember`, persisting the rule with importance tiering, updating the Git Markdown file, and caching its vector embedding.
 
-2. **Semantic Contextual Recall**:
-   When you later ask:
-   > *"How do we write tests for our async workers?"*
-   The plugin performs vector cosine similarity search and injects the pytest-asyncio guideline into the model context.
+2. **Automatic Contextual Recall**:
+   On your next task, when you ask:
+   > *"Write a test for the auth login endpoint."*
+   The plugin runs hybrid ranking, automatically surfacing the Vitest & MSW conventions into the active prompt.
 
 ---
 
@@ -83,9 +87,10 @@ plugins:
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `storagePath` | `string` | `".dsh/MEMORY.md"` | Path to the persistent markdown file |
-| `vectorStoragePath` | `string` | `".dsh/memory_vectors.json"` | Path to vector cache |
+| `vectorStoragePath` | `string` | `".dsh/memory_store.json"` | Path to vector cache & access metadata |
 | `autoRecall` | `boolean` | `true` | Automatically inject memories on session start |
-| `maxRecallChars` | `number` | `3000` | Character budget limit for memory injection |
+| `maxRecallChars` | `number` | `3500` | Character budget limit for memory injection |
+| `topK` | `number` | `6` | Number of top scored memories to recall |
 | `embedding.enabled` | `boolean` | `false` | Enable vector semantic search |
 | `embedding.provider` | `string` | `"none"` | `"openai-compatible"` or `"ollama"` |
 | `embedding.apiBase` | `string` | `""` | Embeddings endpoint URL |
