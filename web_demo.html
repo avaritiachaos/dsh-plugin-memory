@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>DeepSeek Harness + @shion-lab/dsh-plugin-memory 交互演示看板</title>
+  <style>
+    :root {
+      --bg: hsl(220, 20%, 10%);
+      --panel-bg: hsl(220, 18%, 14%);
+      --border: hsl(220, 15%, 22%);
+      --accent-cyan: hsl(185, 90%, 50%);
+      --accent-purple: hsl(275, 80%, 65%);
+      --accent-green: hsl(150, 75%, 45%);
+      --text: hsl(210, 30%, 96%);
+      --text-muted: hsl(215, 15%, 65%);
+      --code-bg: hsl(220, 25%, 8%);
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* 顶部导航栏 */
+    header {
+      background: var(--panel-bg);
+      border-bottom: 1px solid var(--border);
+      padding: 12px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-weight: 700;
+      font-size: 1.1rem;
+    }
+    .badge {
+      background: rgba(43, 212, 196, 0.15);
+      color: var(--accent-cyan);
+      border: 1px solid rgba(43, 212, 196, 0.3);
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 0.75rem;
+    }
+    .controls {
+      display: flex;
+      gap: 10px;
+    }
+    .btn {
+      background: linear-gradient(135deg, hsl(270, 70%, 55%), hsl(190, 80%, 45%));
+      color: #fff;
+      border: none;
+      padding: 8px 18px;
+      border-radius: 6px;
+      font-weight: 600;
+      cursor: pointer;
+      font-size: 0.9rem;
+      transition: all 0.2s;
+    }
+    .btn:hover { opacity: 0.9; transform: translateY(-1px); }
+    .btn-secondary {
+      background: var(--border);
+      color: var(--text);
+    }
+
+    /* 主视窗分割 */
+    main {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 1.1fr 0.9fr;
+      height: calc(100vh - 60px);
+    }
+
+    /* 左侧：DeepSeek 对话视窗 */
+    .chat-panel {
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      background: var(--panel-bg);
+    }
+    .chat-header {
+      padding: 14px 20px;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      display: flex;
+      justify-content: space-between;
+    }
+    .chat-messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+
+    .msg {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      max-width: 90%;
+      animation: fadeIn 0.3s ease;
+    }
+    .msg-user {
+      align-self: flex-end;
+      align-items: flex-end;
+    }
+    .msg-user .bubble {
+      background: hsl(220, 35%, 28%);
+      color: #fff;
+      border-radius: 12px 12px 2px 12px;
+      padding: 12px 16px;
+      font-size: 0.95rem;
+    }
+    .msg-ds {
+      align-self: flex-start;
+      align-items: flex-start;
+    }
+    .msg-ds .bubble {
+      background: hsl(220, 20%, 18%);
+      border: 1px solid var(--border);
+      border-radius: 12px 12px 12px 2px;
+      padding: 14px 18px;
+      font-size: 0.95rem;
+      line-height: 1.5;
+    }
+
+    .tool-card {
+      background: rgba(43, 212, 196, 0.08);
+      border-left: 3px solid var(--accent-cyan);
+      padding: 8px 12px;
+      border-radius: 4px;
+      font-size: 0.8rem;
+      font-family: monospace;
+      color: var(--accent-cyan);
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    pre code {
+      display: block;
+      background: var(--code-bg);
+      padding: 12px;
+      border-radius: 6px;
+      font-family: Consolas, monospace;
+      font-size: 0.85rem;
+      color: hsl(150, 60%, 75%);
+      margin-top: 8px;
+      border: 1px solid var(--border);
+    }
+
+    /* 右侧：紫苑记忆动力学监视舱 */
+    .matrix-panel {
+      background: var(--bg);
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+      padding: 20px;
+      gap: 20px;
+    }
+    .card {
+      background: var(--panel-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .card-title {
+      font-size: 0.9rem;
+      font-weight: 700;
+      display: flex;
+      justify-content: space-between;
+      color: var(--accent-purple);
+    }
+    .file-preview {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 12px;
+      font-family: Consolas, monospace;
+      font-size: 0.8rem;
+      color: hsl(210, 20%, 80%);
+      line-height: 1.4;
+      white-space: pre-wrap;
+    }
+    .vector-bar-wrap {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .vector-bar {
+      height: 8px;
+      background: var(--border);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    .vector-progress {
+      height: 100%;
+      background: linear-gradient(90deg, var(--accent-cyan), var(--accent-purple));
+      width: 0%;
+      transition: width 1s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .session-divider {
+      text-align: center;
+      position: relative;
+      margin: 10px 0;
+      color: var(--text-muted);
+      font-size: 0.8rem;
+    }
+    .session-divider::before {
+      content: "";
+      position: absolute;
+      left: 0; top: 50%;
+      width: 100%; height: 1px;
+      background: var(--border);
+      z-index: 1;
+    }
+    .session-divider span {
+      position: relative;
+      background: var(--panel-bg);
+      padding: 0 12px;
+      z-index: 2;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="brand">
+      <span>DeepSeek Harness</span>
+      <span class="badge">搭载 @shion-lab/dsh-plugin-memory</span>
+    </div>
+    <div class="controls">
+      <button class="btn btn-secondary" onclick="resetDemo()">重置</button>
+      <button class="btn" id="playBtn" onclick="runDemo()">▶ 开始实机演示</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- 左侧对话流 -->
+    <div class="chat-panel">
+      <div class="chat-header">
+        <span>会话工作区: D:/AI_alice/project</span>
+        <span id="sessionStatus">状态: 准备就绪</span>
+      </div>
+      <div class="chat-messages" id="chatList">
+        <div class="msg msg-ds">
+          <div class="bubble">
+            Master，DeepSeek Harness (dsh) 运行时已就绪。已挂载紫苑级三层立体持久记忆插件。
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 右侧记忆监视舱 -->
+    <div class="matrix-panel">
+      <!-- Layer 1: Markdown 文件 -->
+      <div class="card">
+        <div class="card-title">
+          <span>Layer 1: Git 版本化规则库 (.dsh/MEMORY.md)</span>
+          <span style="color: var(--accent-green);">Git 实时同步</span>
+        </div>
+        <div class="file-preview" id="mdFilePreview">## Project & User Persistent Memory
+> (暂无持久化记忆记录，等待训练...)</div>
+      </div>
+
+      <!-- Layer 2: 向量相似度雷达 -->
+      <div class="card">
+        <div class="card-title">
+          <span>Layer 2: 稠密向量语义检索引擎 (Vector Radar)</span>
+          <span id="vectorScoreTag" style="color: var(--accent-cyan);">等待查询</span>
+        </div>
+        <div class="vector-bar-wrap">
+          <div style="display: flex; justify-content: space-between; font-size: 0.8rem; color: var(--text-muted);">
+            <span>余弦语义相似度 (Cosine Score)</span>
+            <span id="vectorScoreVal">0.00</span>
+          </div>
+          <div class="vector-bar">
+            <div class="vector-progress" id="vectorProgress"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Layer 3: 动力学衰减 -->
+      <div class="card">
+        <div class="card-title">
+          <span>Layer 3: 记忆活力 (Half-life Decay & Frequency)</span>
+          <span style="color: var(--accent-purple);">紫苑混合打分</span>
+        </div>
+        <div style="font-size: 0.8rem; color: var(--text-muted); line-height: 1.6;">
+          • 半衰期衰减：30 天指数平滑 (Freshness Priority)<br>
+          • 访问频次强化：命中自动加权 (Hit Reinforcement)<br>
+          • 预算硬隔离：Top-6 高价值记忆精准装填
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+    const chatList = document.getElementById('chatList');
+    const mdPreview = document.getElementById('mdFilePreview');
+    const vectorProgress = document.getElementById('vectorProgress');
+    const vectorScoreVal = document.getElementById('vectorScoreVal');
+    const vectorScoreTag = document.getElementById('vectorScoreTag');
+    const sessionStatus = document.getElementById('sessionStatus');
+    const playBtn = document.getElementById('playBtn');
+
+    function resetDemo() {
+      chatList.innerHTML = `
+        <div class="msg msg-ds">
+          <div class="bubble">
+            Master，DeepSeek Harness (dsh) 运行时已就绪。已挂载紫苑级三层立体持久记忆插件。
+          </div>
+        </div>
+      `;
+      mdPreview.innerText = "## Project & User Persistent Memory\n> (暂无持久化记忆记录，等待训练...)";
+      vectorProgress.style.width = "0%";
+      vectorScoreVal.innerText = "0.00";
+      vectorScoreTag.innerText = "等待查询";
+      sessionStatus.innerText = "状态: 准备就绪";
+      playBtn.disabled = false;
+    }
+
+    async function runDemo() {
+      playBtn.disabled = true;
+      sessionStatus.innerText = "正在演示：第 1 轮会话训练...";
+
+      // User Msg 1
+      await sleep(600);
+      chatList.innerHTML += `
+        <div class="msg msg-user">
+          <div class="bubble">记住：咱们这个项目一律用 HSL 配色，禁止使用 Tailwind CSS。还有，写异步单测必须用 pytest-asyncio！</div>
+        </div>
+      `;
+      chatList.scrollTop = chatList.scrollHeight;
+
+      // DS Tool Call
+      await sleep(800);
+      chatList.innerHTML += `
+        <div class="msg msg-ds">
+          <div class="tool-card">⚡ [Tool Call] remember({ topic: "项目前端配色与单测规范", category: "convention", importance: 5 })</div>
+          <div class="bubble">收到，Master！项目规范已写入长期记忆库，并完成 1536 维向量编码，后续会话终身生效。</div>
+        </div>
+      `;
+      chatList.scrollTop = chatList.scrollHeight;
+
+      // Update Matrix
+      mdPreview.innerText = `## Project & User Persistent Memory
+> The following guidelines have been established:
+
+### Code Conventions & Standards
+- **项目前端配色与单测规范**: 配色严格采用 HSL 格式，杜绝 Tailwind 类名；单测统一使用 pytest-asyncio.`;
+      
+      vectorProgress.style.width = "100%";
+      vectorScoreVal.innerText = "1.00 (写入成功)";
+      vectorScoreTag.innerText = "向量已索引";
+
+      // Divider: 5 days later
+      await sleep(1500);
+      chatList.innerHTML += `
+        <div class="session-divider">
+          <span>... [关闭终端，经过 5 天后开启全新会话] ...</span>
+        </div>
+      `;
+      sessionStatus.innerText = "正在演示：跨会话自动唤醒...";
+
+      // User Msg 2 (No rules mentioned)
+      await sleep(1200);
+      chatList.innerHTML += `
+        <div class="msg msg-user">
+          <div class="bubble">帮我写一个用户卡片组件的样式，并配一个测试用例。</div>
+        </div>
+      `;
+      chatList.scrollTop = chatList.scrollHeight;
+
+      // Vector match animation
+      await sleep(600);
+      vectorProgress.style.width = "96%";
+      vectorScoreVal.innerText = "0.96 (极高相关)";
+      vectorScoreTag.innerText = "🎯 语义自动命中";
+
+      // DS Response with memory applied
+      await sleep(1000);
+      chatList.innerHTML += `
+        <div class="msg msg-ds">
+          <div class="bubble">
+            好的 Master，已根据之前记忆库中您立下的项目规范进行编写：
+            <pre><code>/* 🎨 严格遵循规范：采用 HSL 配色，未使用 Tailwind */
+.user-card {
+  background: hsl(220, 18%, 14%);
+  border: 1px solid hsl(220, 25%, 26%);
+  color: hsl(210, 40%, 98%);
+  border-radius: 8px;
+}</code></pre>
+            <pre><code># 🧪 严格遵循规范：采用 pytest-asyncio 异步测试
+import pytest
+
+@pytest.mark.asyncio
+async def test_user_card_render():
+    assert True</code></pre>
+          </div>
+        </div>
+      `;
+      chatList.scrollTop = chatList.scrollHeight;
+      sessionStatus.innerText = "✨ 演示完毕：零重复提示词，精准记忆！";
+      playBtn.disabled = false;
+    }
+  </script>
+</body>
+</html>
