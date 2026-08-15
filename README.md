@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/@shion-lab/dsh-plugin-memory.svg)](https://www.npmjs.com/package/@shion-lab/dsh-plugin-memory)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-> **Persistent cross-session long-term memory and project knowledge plugin for DeepSeek Harness (`dsh`).**
+> **Persistent cross-session dual-layer memory (Markdown Rules + Dense Vector Semantic Search) for DeepSeek Harness (`dsh`).**
 
 ---
 
@@ -11,12 +11,12 @@
 
 By default, DeepSeek Harness operates in a **stateless** manner: once a terminal session closes, all project-specific architectural rules, user preferences, and hard-earned debugging lessons are lost.
 
-`@shion-lab/dsh-plugin-memory` introduces a **local-first, zero-overhead long-term memory engine** to DeepSeek Harness:
+`@shion-lab/dsh-plugin-memory` introduces a **dual-layer memory architecture** to DeepSeek Harness:
 
-- 🧠 **Cross-session Recall**: Automatically loads `.dsh/MEMORY.md` into the agent's context on startup.
-- 📝 **Human-Readable & Git-Tracked**: Stores memories in clean Markdown format right inside your project repository.
-- ⚡ **Explicit & Implicit Memory Tools**: The agent can explicitly `remember` user rules or `recall` past solutions.
-- 🛡️ **Budget Guard**: Protects context window limits with configurable character caps.
+- 📝 **Layer 1: Human-Readable Markdown (`.dsh/MEMORY.md`)**: Stores code conventions, preferences, and lessons directly in your repository (Git-trackable).
+- 🧠 **Layer 2: Dense Vector Semantic Engine (`.dsh/memory_vectors.json`)**: Computes cosine vector similarity embeddings (OpenAI / Ollama / Local) to semantically retrieve relevant memories even when query phrasing differs.
+- ⚡ **Auto-Recall & Context Budget Guard**: Automatically injects only the top relevant memories into the system prompt without context bloat.
+- 🛡️ **Zero-Lockin / Local-First**: Works completely offline in zero-dep Markdown mode, or optionally with vector embeddings.
 
 ---
 
@@ -34,10 +34,11 @@ yarn add @shion-lab/dsh-plugin-memory
 
 ## 🚀 Quick Start
 
-Add `@shion-lab/dsh-plugin-memory` to your `cordis.yml` or load it via CLI:
+### Mode A: Lightweight Zero-Config (Markdown-only)
+
+Add to `cordis.yml`:
 
 ```yaml
-# cordis.yml
 plugins:
   "@deepseek-ai/dsh": {}
   "@shion-lab/dsh-plugin-memory":
@@ -46,42 +47,49 @@ plugins:
     maxRecallChars: 3000
 ```
 
-Run DeepSeek Harness:
+### Mode B: Advanced Semantic Vector Search (with Ollama or OpenAI embeddings)
 
-```bash
-npx @deepseek-ai/dsh
+```yaml
+plugins:
+  "@deepseek-ai/dsh": {}
+  "@shion-lab/dsh-plugin-memory":
+    storagePath: ".dsh/MEMORY.md"
+    embedding:
+      enabled: true
+      provider: "ollama" # or "openai-compatible"
+      apiBase: "http://localhost:11434"
+      model: "nomic-embed-text"
+      dimension: 768
 ```
 
 ---
 
 ## 🛠️ How It Works
 
-1. When you start a task, the plugin automatically renders the contents of `.dsh/MEMORY.md` into the system prompt.
-2. During the session, you can say:
-   > *"Remember: Always use `pnpm` instead of `npm` for this repository, and avoid Tailwind CSS."*
-3. DeepSeek calls the `remember` tool, persisting the new guideline to `.dsh/MEMORY.md`:
+1. **Explicit Remembering**:
+   During chat, tell the agent:
+   > *"Remember: Always use pytest-asyncio for async tests and avoid using sleep in tests."*
+   The agent calls `remember`, persisting the rule to `.dsh/MEMORY.md` and calculating its vector embedding.
 
-```markdown
-## Project & User Persistent Memory
-
-### Code Conventions & Standards
-- **Package Manager**: Use pnpm instead of npm.
-- **Styling**: Avoid Tailwind CSS; use Vanilla CSS modules.
-
-### Past Lessons & Bug Fix Records
-- **Vite ESM**: Fix require() error in vite.config.ts by using dynamic import().
-```
+2. **Semantic Contextual Recall**:
+   When you later ask:
+   > *"How do we write tests for our async workers?"*
+   The plugin performs vector cosine similarity search and injects the pytest-asyncio guideline into the model context.
 
 ---
 
-## ⚙️ Configuration Options
+## ⚙️ Configuration Reference
 
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `storagePath` | `string` | `".dsh/MEMORY.md"` | Path to the persistent markdown file |
+| `vectorStoragePath` | `string` | `".dsh/memory_vectors.json"` | Path to vector cache |
 | `autoRecall` | `boolean` | `true` | Automatically inject memories on session start |
 | `maxRecallChars` | `number` | `3000` | Character budget limit for memory injection |
-| `autoReflect` | `boolean` | `true` | Enable task-end reflection summary |
+| `embedding.enabled` | `boolean` | `false` | Enable vector semantic search |
+| `embedding.provider` | `string` | `"none"` | `"openai-compatible"` or `"ollama"` |
+| `embedding.apiBase` | `string` | `""` | Embeddings endpoint URL |
+| `embedding.model` | `string` | `"text-embedding-3-small"` | Embedding model name |
 
 ---
 
