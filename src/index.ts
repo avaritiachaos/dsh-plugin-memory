@@ -4,19 +4,8 @@ import * as path from 'node:path'
 import { MemoryGuard } from './guard.js'
 import { MemoryConflictDetector } from './conflict.js'
 
-/**
- * Memory record category.
- */
 export type MemoryCategory = 'convention' | 'preference' | 'architecture' | 'lesson' | 'general'
 
-/**
- * Enhanced memory item capturing Shion's self-correcting memory dynamics:
- * - Hybrid lexical + vector representations
- * - Access count & recency decay weights (memory vitality)
- * - Importance tiering
- * - Verification status & audit trail (Anti-hallucination guard)
- * - Polarity conflict history & supersession tracking
- */
 export interface MemoryItem {
   id: string
   category: MemoryCategory
@@ -29,8 +18,7 @@ export interface MemoryItem {
   lastAccessedAt: string
   createdAt: string
   updatedAt: string
-  correctionHistory?: string[] // Audit trail of past corrections & conflict resolutions
-  /** Optional dense vector embedding for semantic search */
+  correctionHistory?: string[]
   vector?: number[]
 }
 
@@ -39,20 +27,15 @@ export interface RememberOptions {
   importance?: number
   verified?: boolean
   verificationProof?: string
+  forceOverride?: boolean
 }
 
 export interface EmbeddingConfig {
-  /** Enabled semantic vector search */
   enabled?: boolean
-  /** Provider: 'openai-compatible' | 'ollama' | 'none' */
   provider?: 'openai-compatible' | 'ollama' | 'none'
-  /** API Base URL for embedding endpoint */
   apiBase?: string
-  /** API Key (if required) */
   apiKey?: string
-  /** Embedding model name */
   model?: string
-  /** Dimension of the embedding model */
   dimension?: number
 }
 
@@ -87,43 +70,65 @@ declare module 'cordis' {
   }
 }
 
+/**
+ * Cosine Similarity between two dense vectors with zero-norm & finite-number guards.
+ */
 function cosineSimilarity(vecA: number[], vecB: number[]): number {
-  if (!vecA || !vecB || vecA.length !== vecB.length || vecA.length === 0) return 0
+  if (!Array.isArray(vecA) || !Array.isArray(vecB) || vecA.length !== vecB.length || vecA.length === 0) {
+    return 0
+  }
   let dotProduct = 0
   let normA = 0
   let normB = 0
   for (let i = 0; i < vecA.length; i++) {
-    dotProduct += vecA[i] * vecB[i]
-    normA += vecA[i] * vecA[i]
-    normB += vecB[i] * vecB[i]
+    const valA = vecA[i]
+    const valB = vecB[i]
+    if (!Number.isFinite(valA) || !Number.isFinite(valB)) return 0
+    dotProduct += valA * valB
+    normA += valA * valA
+    normB += valB * valB
   }
-  if (normA === 0 || normB === 0) return 0
-  return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB))
+  if (normA <= 0 || normB <= 0) return 0
+  const denom = Math.sqrt(normA) * Math.sqrt(normB)
+  return denom > 0 ? dotProduct / denom : 0
 }
 
+/**
+ * True 30-day exponential half-life decay: score = (0.5)^(days / 30).
+ * Yields exactly 0.5 at 30 days, 0.25 at 60 days.
+ */
 function calculateRecencyScore(dateString: string): number {
+  if (!dateString) return 0.5
   try {
-    const elapsedMs = Date.now() - new Date(dateString).getTime()
-    const days = Math.max(0, elapsedMs / (1000 * 60 * 60 * 24))
-    return Math.exp(-days / 30)
+    const timeMs = new Date(dateString).getTime()
+    if (!Number.isFinite(timeMs)) return 0.5
+    const elapsedMs = Math.max(0, Date.now() - timeMs)
+    const days = elapsedMs / (1000 * 60 * 60 * 24)
+    return Math.pow(0.5, days / 30)
   } catch {
     return 0.5
   }
 }
 
 /**
- * DeepSeek Harness Long-term Memory Service.
- * Full Shion Architecture implementation:
- * 1. MemoryGuard (Red-light filtering)
- * 2. MemoryConflictDetector (Subject & polarity conflict resolution)
- * 3. Triple-Layer Storage (Git Markdown + Dense Vector + Hybrid Vitality Decay)
- * 4. Dream & Reflection Engine (Consolidation, deduplication, audit trail)
+ * Simple Async Mutex for linearizing file persistence operations.
  */
-export class MemoryService extends Service {
-  private config: Required<Omit<MemoryConfig, 'embedding'>> & { embedding: Required<EmbeddingConfig> }
+class AsyncLock {
+  private queue = Promise.resolve()
+
+  public acquire<T>(task: () => Promise<T>): Promise<T> {
+    const result = this.queue.then(task)
+    this.queue = result.then(() => {}, () => {})
+    return result
+  }
+}
+
+export class MemoryService extends Service<MemoryConfig> {
+  public override config: Required<Omit<MemoryConfig, 'embedding'>> & { embedding: Required<EmbeddingConfig> }
   private memories: Map<string, MemoryItem> = new Map()
   private resolvedPath: string = ''
   private resolvedVectorPath: string = ''
+  private ioLock = new AsyncLock()
 
   constructor(ctx: Context, config: MemoryConfig = {}) {
     super(ctx, 'memory', true)
@@ -131,8 +136,8 @@ export class MemoryService extends Service {
       storagePath: config.storagePath || '.dsh/MEMORY.md',
       vectorStoragePath: config.vectorStoragePath || '.dsh/memory_store.json',
       autoRecall: config.autoRecall ?? true,
-      maxRecallChars: config.maxRecallChars ?? 3500,
-      topK: config.topK ?? 6,
+      maxRecallChars: Math.max(100, config.maxRecallChars ?? 3500),
+      topK: Math.max(1, config.topK ?? 6),
       embedding: {
         enabled: config.embedding?.enabled ?? false,
         provider: config.embedding?.provider || 'none',
@@ -157,46 +162,56 @@ export class MemoryService extends Service {
     await this.loadFromDisk()
     await this.loadMetadataFromDisk()
     this.ctx.logger.info(
-      `[dsh-plugin-memory] Shion 4-Tier Memory Engine active: ${this.memories.size} items (Guard: ON, ConflictDetector: ON, Vector: ${
+      `[dsh-plugin-memory] Shion 4-Tier Cognitive Engine active: ${this.memories.size} items (Guard: ON, ConflictDetector: ON, Vector: ${
         this.config.embedding.enabled ? 'ON' : 'OFF'
       })`
     )
   }
 
-  /**
-   * Save or update memory with automatic red-light guard, conflict resolution, and vectorization.
-   */
   public async remember(
     topic: string,
     content: string,
     options: RememberOptions | MemoryCategory = 'general',
     importanceArg: number = 3
   ): Promise<{ success: boolean; id: string; message: string }> {
-    // 1. Shion MemoryGuard Red-light check
-    const guardCheck = MemoryGuard.isRedLight(content)
-    if (guardCheck.blocked) {
-      this.ctx.logger.warn(`[dsh-plugin-memory] Red-light blocked memory '${topic}': ${guardCheck.reason}`)
-      return {
-        success: false,
-        id: '',
-        message: `Blocked by MemoryGuard: ${guardCheck.reason}`,
-      }
+    const cleanTopic = (topic || '').trim()
+    const cleanContent = (content || '').trim()
+
+    // 1. MemoryGuard Red-light check on both topic and content
+    const topicGuard = MemoryGuard.isRedLight(cleanTopic)
+    if (topicGuard.blocked) {
+      return { success: false, id: '', message: `Blocked by MemoryGuard on topic: ${topicGuard.reason}` }
+    }
+    const contentGuard = MemoryGuard.isRedLight(cleanContent)
+    if (contentGuard.blocked) {
+      return { success: false, id: '', message: `Blocked by MemoryGuard on content: ${contentGuard.reason}` }
     }
 
-    const key = topic.trim().toLowerCase()
+    const key = cleanTopic.toLowerCase()
     const category: MemoryCategory = typeof options === 'string' ? options : options.category || 'general'
-    const importance: number = typeof options === 'object' && options.importance !== undefined ? options.importance : importanceArg
-    const verified: boolean = typeof options === 'object' && options.verified !== undefined ? options.verified : false
+    const importanceRaw: number = typeof options === 'object' && options.importance !== undefined ? options.importance : importanceArg
+    const clampedImportance = Math.min(5, Math.max(1, Number.isFinite(importanceRaw) ? Math.round(importanceRaw) : 3))
+    const verified: boolean = typeof options === 'object' && options.verified !== undefined ? Boolean(options.verified) : false
+    const forceOverride: boolean = typeof options === 'object' && options.forceOverride !== undefined ? Boolean(options.forceOverride) : false
 
     const now = new Date().toISOString()
     const existing = this.memories.get(key)
     const history: string[] = existing?.correctionHistory ? [...existing.correctionHistory] : []
 
-    // 2. Shion Polarity Conflict Detection across all active memories
+    // 2. Polarity Conflict Detection with Verified Priority Protection
     for (const [otherKey, otherItem] of this.memories.entries()) {
-      const conflict = MemoryConflictDetector.detectConflict(content, otherItem.content)
+      const conflict = MemoryConflictDetector.detectConflict(cleanContent, otherItem.content)
       if (conflict) {
-        history.push(`[${now}] Conflict Resolved: Overrode previous rule '${otherItem.topic}' (${conflict.reason})`)
+        // Guard: Unverified candidate CANNOT override an already verified rule without explicit forceOverride
+        if (otherItem.verified && !verified && !forceOverride) {
+          return {
+            success: false,
+            id: key,
+            message: `Conflict rejected: Unverified rule cannot overwrite verified rule '${otherItem.topic}' (${conflict.reason}). Use correct() or forceOverride: true.`,
+          }
+        }
+
+        history.push(`[${now}] Conflict Resolved: Superseded rule '${otherItem.topic}' (${conflict.reason})`)
         this.ctx.logger.info(`[dsh-plugin-memory] Auto-resolved polarity conflict: ${conflict.reason}`)
         if (otherKey !== key) {
           this.memories.delete(otherKey)
@@ -207,18 +222,18 @@ export class MemoryService extends Service {
     let vector: number[] | undefined
     if (this.config.embedding.enabled) {
       try {
-        vector = await this.embedText(`${topic}: ${content}`)
+        vector = await this.embedText(`${cleanTopic}: ${cleanContent}`)
       } catch (err) {
-        this.ctx.logger.warn(`Vector embedding failed for '${topic}': ${err}`)
+        this.ctx.logger.warn(`Vector embedding failed for '${cleanTopic}': ${err}`)
       }
     }
 
     const item: MemoryItem = {
       id: key,
-      topic: topic.trim(),
-      content: content.trim(),
+      topic: cleanTopic,
+      content: cleanContent,
       category,
-      importance: Math.min(5, Math.max(1, importance)),
+      importance: clampedImportance,
       accessCount: existing ? existing.accessCount + 1 : 1,
       verified: verified || (existing?.verified ?? false),
       verifiedAt: verified ? now : existing?.verifiedAt,
@@ -230,53 +245,57 @@ export class MemoryService extends Service {
     }
 
     this.memories.set(key, item)
-    await this.flushToDisk()
-    await this.flushMetadataToDisk()
+
+    try {
+      await this.persistAll()
+    } catch (err) {
+      return { success: false, id: key, message: `Failed to persist to disk: ${err}` }
+    }
 
     return {
       success: true,
       id: key,
-      message: `Remembered '${topic}' under [${category}] (verified: ${item.verified ? 'YES' : 'NO'}, importance: ${importance}/5).`,
+      message: `Remembered '${cleanTopic}' under [${category}] (verified: ${item.verified ? 'YES' : 'NO'}, importance: ${clampedImportance}/5).`,
     }
   }
 
-  /**
-   * Explicitly correct or supersede an existing memory, preventing compounding errors.
-   */
   public async correct(
     topic: string,
     correctedContent: string,
     reason: string = 'User correction'
   ): Promise<{ success: boolean; message: string }> {
-    const guardCheck = MemoryGuard.isRedLight(correctedContent)
+    const cleanTopic = (topic || '').trim()
+    const cleanContent = (correctedContent || '').trim()
+
+    const guardCheck = MemoryGuard.isRedLight(cleanContent)
     if (guardCheck.blocked) {
       return { success: false, message: `Correction blocked by MemoryGuard: ${guardCheck.reason}` }
     }
 
-    const key = topic.trim().toLowerCase()
+    const key = cleanTopic.toLowerCase()
     const existing = this.memories.get(key)
     const now = new Date().toISOString()
 
     const previousContent = existing ? existing.content : '(new)'
-    const historyEntry = `[${now}] Corrected: "${previousContent.slice(0, 50)}..." -> "${correctedContent.slice(0, 50)}..." (Reason: ${reason})`
+    const historyEntry = `[${now}] Corrected: "${previousContent.slice(0, 50)}..." -> "${cleanContent.slice(0, 50)}..." (Reason: ${reason})`
 
     let vector: number[] | undefined
     if (this.config.embedding.enabled) {
       try {
-        vector = await this.embedText(`${topic}: ${correctedContent}`)
+        vector = await this.embedText(`${cleanTopic}: ${cleanContent}`)
       } catch (err) {
-        this.ctx.logger.warn(`Vector update failed for '${topic}': ${err}`)
+        this.ctx.logger.warn(`Vector update failed for '${cleanTopic}': ${err}`)
       }
     }
 
     const item: MemoryItem = {
       id: key,
-      topic: topic.trim(),
-      content: correctedContent.trim(),
+      topic: cleanTopic,
+      content: cleanContent,
       category: existing?.category || 'lesson',
       importance: existing ? Math.min(5, existing.importance + 1) : 4,
       accessCount: existing ? existing.accessCount + 1 : 1,
-      verified: true,
+      verified: true, // Explicit corrections are considered verified
       verifiedAt: now,
       lastAccessedAt: now,
       createdAt: existing ? existing.createdAt : now,
@@ -286,75 +305,47 @@ export class MemoryService extends Service {
     }
 
     this.memories.set(key, item)
-    await this.flushToDisk()
-    await this.flushMetadataToDisk()
+
+    try {
+      await this.persistAll()
+    } catch (err) {
+      return { success: false, message: `Persistence failure: ${err}` }
+    }
 
     return {
       success: true,
-      message: `Successfully corrected memory for '${topic}'. Marked as verified.`,
-    }
-  }
-
-  /**
-   * Shion-inspired Dream Consolidation Engine:
-   * Cleans expired candidates, resolves duplicates, and optimizes prompt budgets.
-   */
-  public async dream(): Promise<{ consolidatedCount: number; message: string }> {
-    const items = Array.from(this.memories.values())
-    let consolidatedCount = 0
-
-    for (let i = 0; i < items.length; i++) {
-      for (let j = i + 1; j < items.length; j++) {
-        const itemA = items[i]
-        const itemB = items[j]
-        if (!itemA || !itemB) continue
-
-        let isDuplicate = false
-        if (itemA.vector && itemB.vector && cosineSimilarity(itemA.vector, itemB.vector) > 0.88) {
-          isDuplicate = true
-        } else if (itemA.topic.toLowerCase() === itemB.topic.toLowerCase()) {
-          isDuplicate = true
-        }
-
-        if (isDuplicate) {
-          const primary = itemA.verified ? itemA : itemB.verified ? itemB : (itemA.updatedAt > itemB.updatedAt ? itemA : itemB)
-          const secondary = primary === itemA ? itemB : itemA
-
-          primary.accessCount += secondary.accessCount
-          primary.content = `${primary.content} (Consolidated: ${secondary.content})`
-          this.memories.delete(secondary.id)
-          consolidatedCount++
-        }
-      }
-    }
-
-    if (consolidatedCount > 0) {
-      await this.flushToDisk()
-      await this.flushMetadataToDisk()
-    }
-
-    return {
-      consolidatedCount,
-      message: `Dream cycle complete: Consolidated ${consolidatedCount} redundant memories.`,
+      message: `Successfully corrected memory for '${cleanTopic}'. Marked as verified.`,
     }
   }
 
   public async recall(query?: string, topK?: number): Promise<MemoryItem[]> {
-    const k = topK || this.config.topK
+    const requestedK = topK !== undefined ? topK : this.config.topK
+    const k = Math.max(0, Math.min(100, Number.isFinite(requestedK) ? Math.floor(requestedK) : this.config.topK))
+    if (k === 0) return []
+
     const items = Array.from(this.memories.values())
     if (items.length === 0) return []
 
+    const now = new Date().toISOString()
+
     if (!query || !query.trim()) {
-      return items
+      // Return top items by importance and recency
+      const results = items
         .sort(
           (a, b) =>
             b.importance * 2 + (b.verified ? 2 : 0) + Math.log(b.accessCount + 1) -
             (a.importance * 2 + (a.verified ? 2 : 0) + Math.log(a.accessCount + 1))
         )
         .slice(0, k)
+
+      for (const item of results) {
+        item.accessCount++
+        item.lastAccessedAt = now
+      }
+      this.ioLock.acquire(() => this.flushMetadataToDisk()).catch(() => {})
+      return results
     }
 
-    const now = new Date().toISOString()
     const queryLower = query.trim().toLowerCase()
     let queryVec: number[] | null = null
 
@@ -400,24 +391,83 @@ export class MemoryService extends Service {
         return s.item
       })
 
-    this.flushMetadataToDisk().catch(() => {})
+    this.ioLock.acquire(() => this.flushMetadataToDisk()).catch(() => {})
     return results
   }
 
+  public async dream(): Promise<{ consolidatedCount: number; message: string }> {
+    const activeKeys = new Set(this.memories.keys())
+    let consolidatedCount = 0
+
+    for (const keyA of activeKeys) {
+      if (!this.memories.has(keyA)) continue
+      const itemA = this.memories.get(keyA)!
+
+      for (const keyB of activeKeys) {
+        if (keyA === keyB || !this.memories.has(keyB)) continue
+        const itemB = this.memories.get(keyB)!
+
+        let isDuplicate = false
+        if (itemA.vector && itemB.vector && cosineSimilarity(itemA.vector, itemB.vector) > 0.88) {
+          isDuplicate = true
+        } else if (itemA.topic.toLowerCase() === itemB.topic.toLowerCase()) {
+          isDuplicate = true
+        }
+
+        if (isDuplicate) {
+          const primary = itemA.verified ? itemA : itemB.verified ? itemB : (itemA.updatedAt > itemB.updatedAt ? itemA : itemB)
+          const secondary = primary === itemA ? itemB : itemA
+
+          primary.accessCount += secondary.accessCount
+          primary.content = `${primary.content}\n(Consolidated: ${secondary.content})`
+          this.memories.delete(secondary.id)
+          consolidatedCount++
+        }
+      }
+    }
+
+    if (consolidatedCount > 0) {
+      await this.persistAll()
+    }
+
+    return {
+      consolidatedCount,
+      message: `Dream cycle complete: Consolidated ${consolidatedCount} redundant memories.`,
+    }
+  }
+
   public async forget(topic: string): Promise<{ success: boolean; message: string }> {
-    const key = topic.trim().toLowerCase()
+    const key = (topic || '').trim().toLowerCase()
     if (this.memories.has(key)) {
       this.memories.delete(key)
-      await this.flushToDisk()
-      await this.flushMetadataToDisk()
+      await this.persistAll()
       return { success: true, message: `Forgotten memory for '${topic}'.` }
     }
     return { success: false, message: `No memory found matching '${topic}'.` }
   }
 
+  /**
+   * Render memories for LLM active prompt with strict character budget truncation.
+   */
   public renderForPrompt(selectedItems?: MemoryItem[]): string {
-    const items = selectedItems || Array.from(this.memories.values())
-    if (items.length === 0) return ''
+    const fullText = this.serializeMarkdown(selectedItems)
+    if (fullText.length > this.config.maxRecallChars) {
+      return fullText.slice(0, this.config.maxRecallChars) + '\n... [Memory truncated by character budget]'
+    }
+    return fullText
+  }
+
+  /**
+   * Full UNTRUNCATED Markdown serializer for disk persistence.
+   * Guarantees 100% round-trip fidelity without character limits.
+   */
+  public serializeForDisk(): string {
+    return this.serializeMarkdown(Array.from(this.memories.values()))
+  }
+
+  private serializeMarkdown(items?: MemoryItem[]): string {
+    const list = items || Array.from(this.memories.values())
+    if (list.length === 0) return ''
 
     const sections: Record<MemoryCategory, string[]> = {
       convention: [],
@@ -427,9 +477,14 @@ export class MemoryService extends Service {
       general: [],
     }
 
-    for (const item of items) {
+    for (const item of list) {
       const verifiedTag = item.verified ? ' `[✔ Verified]`' : ''
-      sections[item.category].push(`- **${item.topic}**${verifiedTag}: ${item.content}`)
+      // Indent multiline contents with 2 spaces for unambiguous parser round-trip
+      const contentLines = item.content.split('\n')
+      const firstLine = contentLines[0]
+      const restLines = contentLines.slice(1).map((l) => `  ${l}`)
+      const formatted = [`- **${item.topic}**${verifiedTag}: ${firstLine}`, ...restLines].join('\n')
+      sections[item.category].push(formatted)
     }
 
     let output = '## Project & User Persistent Memory (Active Knowledge)\n'
@@ -449,24 +504,34 @@ export class MemoryService extends Service {
       }
     }
 
-    if (output.length > this.config.maxRecallChars) {
-      output = output.slice(0, this.config.maxRecallChars) + '\n... [Memory truncated by character budget]'
-    }
-
     return output.trim()
   }
 
+  private async persistAll(): Promise<void> {
+    await this.ioLock.acquire(async () => {
+      await this.flushToDisk()
+      await this.flushMetadataToDisk()
+    })
+  }
+
   private async embedText(text: string): Promise<number[]> {
-    const { provider, apiBase, apiKey, model } = this.config.embedding
+    const { provider, apiBase, apiKey, model, dimension } = this.config.embedding
+    if (!this.config.embedding.enabled || provider === 'none') {
+      return []
+    }
+
     if (provider === 'ollama') {
       const url = `${apiBase || 'http://localhost:11434'}/api/embeddings`
       const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: model || 'nomic-embed-text', prompt: text }),
+        signal: AbortSignal.timeout(10000),
       })
-      const data = (await res.json()) as { embedding: number[] }
-      return data.embedding
+      if (!res.ok) throw new Error(`Ollama embedding HTTP ${res.status}`)
+      const data = (await res.json()) as any
+      if (Array.isArray(data.embedding)) return data.embedding
+      throw new Error('Invalid Ollama embedding response shape')
     }
 
     const url = `${apiBase || 'https://api.openai.com/v1'}/embeddings`
@@ -479,10 +544,16 @@ export class MemoryService extends Service {
       body: JSON.stringify({
         input: text,
         model: model || 'text-embedding-3-small',
+        dimensions: dimension,
       }),
+      signal: AbortSignal.timeout(10000),
     })
-    const data = (await res.json()) as { data: Array<{ embedding: number[] }> }
-    return data.data[0].embedding
+    if (!res.ok) throw new Error(`OpenAI embedding HTTP ${res.status}`)
+    const data = (await res.json()) as any
+    if (data?.data?.[0]?.embedding && Array.isArray(data.data[0].embedding)) {
+      return data.data[0].embedding
+    }
+    throw new Error('Invalid OpenAI embedding response shape')
   }
 
   private async loadFromDisk(): Promise<void> {
@@ -503,14 +574,15 @@ export class MemoryService extends Service {
       for (const [key, meta] of Object.entries(metadataMap)) {
         if (this.memories.has(key)) {
           const item = this.memories.get(key)!
-          if (meta.vector) item.vector = meta.vector
-          if (meta.accessCount) item.accessCount = meta.accessCount
-          if (meta.importance) item.importance = meta.importance
-          if (meta.verified !== undefined) item.verified = meta.verified
-          if (meta.verifiedAt) item.verifiedAt = meta.verifiedAt
-          if (meta.correctionHistory) item.correctionHistory = meta.correctionHistory
-          if (meta.lastAccessedAt) item.lastAccessedAt = meta.lastAccessedAt
-          if (meta.createdAt) item.createdAt = meta.createdAt
+          if (Array.isArray(meta.vector)) item.vector = meta.vector
+          if (typeof meta.accessCount === 'number') item.accessCount = meta.accessCount
+          if (typeof meta.importance === 'number') item.importance = meta.importance
+          if (typeof meta.verified === 'boolean') item.verified = meta.verified
+          if (typeof meta.verifiedAt === 'string') item.verifiedAt = meta.verifiedAt
+          if (Array.isArray(meta.correctionHistory)) item.correctionHistory = meta.correctionHistory
+          if (typeof meta.lastAccessedAt === 'string') item.lastAccessedAt = meta.lastAccessedAt
+          if (typeof meta.createdAt === 'string') item.createdAt = meta.createdAt
+          if (typeof meta.updatedAt === 'string') item.updatedAt = meta.updatedAt
         }
       }
     } catch (err) {
@@ -519,37 +591,34 @@ export class MemoryService extends Service {
   }
 
   private async flushToDisk(): Promise<void> {
-    try {
-      const dir = path.dirname(this.resolvedPath)
-      if (!fs.existsSync(dir)) await fs.promises.mkdir(dir, { recursive: true })
-      await fs.promises.writeFile(this.resolvedPath, this.renderForPrompt(), 'utf-8')
-    } catch (err) {
-      this.ctx.logger.error(`Failed to flush memories: ${err}`)
-    }
+    const dir = path.dirname(this.resolvedPath)
+    if (!fs.existsSync(dir)) await fs.promises.mkdir(dir, { recursive: true })
+    const tmpPath = `${this.resolvedPath}.tmp.${Date.now()}`
+    const content = this.serializeForDisk() // Full serialization, NOT prompt-truncated
+    await fs.promises.writeFile(tmpPath, content, 'utf-8')
+    await fs.promises.rename(tmpPath, this.resolvedPath)
   }
 
   private async flushMetadataToDisk(): Promise<void> {
-    try {
-      const dir = path.dirname(this.resolvedVectorPath)
-      if (!fs.existsSync(dir)) await fs.promises.mkdir(dir, { recursive: true })
-      const metadataMap: Record<string, Partial<MemoryItem>> = {}
-      for (const [key, item] of this.memories.entries()) {
-        metadataMap[key] = {
-          vector: item.vector,
-          accessCount: item.accessCount,
-          importance: item.importance,
-          verified: item.verified,
-          verifiedAt: item.verifiedAt,
-          correctionHistory: item.correctionHistory,
-          lastAccessedAt: item.lastAccessedAt,
-          createdAt: item.createdAt,
-          updatedAt: item.updatedAt,
-        }
+    const dir = path.dirname(this.resolvedVectorPath)
+    if (!fs.existsSync(dir)) await fs.promises.mkdir(dir, { recursive: true })
+    const tmpPath = `${this.resolvedVectorPath}.tmp.${Date.now()}`
+    const metadataMap: Record<string, Partial<MemoryItem>> = {}
+    for (const [key, item] of this.memories.entries()) {
+      metadataMap[key] = {
+        vector: item.vector,
+        accessCount: item.accessCount,
+        importance: item.importance,
+        verified: item.verified,
+        verifiedAt: item.verifiedAt,
+        correctionHistory: item.correctionHistory,
+        lastAccessedAt: item.lastAccessedAt,
+        createdAt: item.createdAt,
+        updatedAt: item.updatedAt,
       }
-      await fs.promises.writeFile(this.resolvedVectorPath, JSON.stringify(metadataMap, null, 2), 'utf-8')
-    } catch (err) {
-      this.ctx.logger.error(`Failed to flush vector index & metadata: ${err}`)
     }
+    await fs.promises.writeFile(tmpPath, JSON.stringify(metadataMap, null, 2), 'utf-8')
+    await fs.promises.rename(tmpPath, this.resolvedVectorPath)
   }
 
   private parseMarkdown(text: string): void {
@@ -613,6 +682,6 @@ export { MemoryGuard, MemoryConflictDetector }
 export default function apply(ctx: Context, config: MemoryConfig = {}) {
   ctx.plugin(MemoryService, config)
   ctx.on('ready', () => {
-    ctx.logger.info('[dsh-plugin-memory] Shion 4-Tier Memory & Conflict-Resolution Engine active.')
+    ctx.logger.info('[dsh-plugin-memory] Shion 4-Tier Cognitive Engine active.')
   })
 }
