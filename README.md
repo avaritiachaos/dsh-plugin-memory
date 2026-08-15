@@ -3,36 +3,40 @@
 [![npm version](https://img.shields.io/npm/v/@shion-lab/dsh-plugin-memory.svg)](https://www.npmjs.com/package/@shion-lab/dsh-plugin-memory)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-> **Persistent triple-layer long-term memory engine for DeepSeek Harness (`dsh`), featuring Git-tracked Markdown storage, dense vector embeddings, and access-frequency/recency hybrid recall.**
+> **Industrial-grade 4-tier persistent memory, self-correction, and cognitive defense engine for DeepSeek Harness (`dsh`).**
+> 
+> *Featuring Git-tracked Markdown storage, dense vector semantic search, red-light pollution guards, polarity conflict detection, and half-life recency decay.*
 > 
 > *Distilled from the battle-tested memory dynamics of desktop companion AI system **Shion (紫苑)**.*
 
 ---
 
-## 🌟 Why `dsh-plugin-memory`? / 为什么需要立体持久记忆？
+## 🌟 Why `dsh-plugin-memory`? / 为什么需要立体持久记忆与自省防护？
 
 By default, DeepSeek Harness operates in a **stateless** manner: once a session closes, all project-specific architectural rules, user preferences, and hard-earned debugging lessons are lost.
 
-`@shion-lab/dsh-plugin-memory` introduces a **production-grade triple-layer memory architecture** directly adapted from desktop companion agent practices (提炼自伴随式智能体「紫苑」实战记忆体系):
+Furthermore, naive memory plugins suffer from **memory pollution, hallucinations, and polarity conflicts** (e.g. saving stack traces or conflicting rules).
 
-- 📝 **Layer 1: Human-in-the-Loop Git Markdown (`.dsh/MEMORY.md`)**: Team-shareable, version-controlled repository conventions and architecture rules.
-- 🧠 **Layer 2: Dense Vector Semantic Engine (`.dsh/memory_store.json`)**: Dense vector embeddings with Cosine Similarity ranking (OpenAI / Ollama / Local).
-- 📈 **Layer 3: Memory Vitality & Hybrid Ranking (RRF)**:
-  - **Recency Decay**: Smooth half-life decay prioritizing recent breakthroughs.
+`@shion-lab/dsh-plugin-memory` introduces a **production-grade 4-tier cognitive architecture** directly ported from companion agent practices (提炼自伴随式智能体「紫苑」实战记忆体系):
+
+- 🛡️ **Tier 1: MemoryGuard (Red-light Anti-Pollution Gate)**:
+  - Strictly blocks stack traces (`Traceback...`), test runner output (`pytest PASSED/FAILED`), diff blocks, and API secrets (`sk-...`) from polluting memory.
+- ⚖️ **Tier 2: MemoryConflictDetector (Subject & Polarity Resolution)**:
+  - Automatically identifies and resolves contradictory rules on the same subject (e.g. `forbid tailwind` vs `require tailwind`), archiving outdated rules and preventing split-brain directives.
+- 📝 **Tier 3: Git-Tracked Markdown Knowledge Base (`.dsh/MEMORY.md`)**:
+  - Human-in-the-loop, version-controlled repository conventions with `[✔ Verified]` test-passed badges.
+- 🧠 **Tier 4: Dense Vector Hybrid Vitality Engine (`.dsh/memory_store.json`)**:
+  - **Dense Vectors**: Cosine similarity semantic search (OpenAI / Ollama).
+  - **Recency Decay**: 30-day half-life exponential decay.
   - **Frequency Reinforcement**: Automatically reinforces frequently accessed wisdom.
-  - **Hybrid Fusion**: Combines lexical keywords (BM25-style) with semantic vector distances to avoid hallucinated recalls.
-- 🛡️ **Budget Guard**: Injects top-K high-value memories without blowing up token context limits.
+  - **Dream Consolidation (`dream()`)**: Background clustering and duplicate merging.
 
 ---
 
 ## 📦 Installation
 
-In your DeepSeek Harness workspace:
-
 ```bash
 npm install -g @shion-lab/dsh-plugin-memory
-# or
-yarn add @shion-lab/dsh-plugin-memory
 ```
 
 ---
@@ -70,33 +74,13 @@ plugins:
 
 ---
 
-## 🛠️ How It Works
+## 🛠️ API & Tool Calling Reference
 
-1. **Natural Interaction**:
-   During chat, instruct DeepSeek:
-   > *"Remember: In this repository we use Vitest instead of Jest, and mock network calls using MSW."*
-   The agent calls `remember`, persisting the rule with importance tiering, updating the Git Markdown file, and caching its vector embedding.
-
-2. **Automatic Contextual Recall**:
-   On your next task, when you ask:
-   > *"Write a test for the auth login endpoint."*
-   The plugin runs hybrid ranking, automatically surfacing the Vitest & MSW conventions into the active prompt.
-
----
-
-## ⚙️ Configuration Reference
-
-| Option | Type | Default | Description |
-|---|---|---|---|
-| `storagePath` | `string` | `".dsh/MEMORY.md"` | Path to the persistent markdown file |
-| `vectorStoragePath` | `string` | `".dsh/memory_store.json"` | Path to vector cache & access metadata |
-| `autoRecall` | `boolean` | `true` | Automatically inject memories on session start |
-| `maxRecallChars` | `number` | `3500` | Character budget limit for memory injection |
-| `topK` | `number` | `6` | Number of top scored memories to recall |
-| `embedding.enabled` | `boolean` | `false` | Enable vector semantic search |
-| `embedding.provider` | `string` | `"none"` | `"openai-compatible"` or `"ollama"` |
-| `embedding.apiBase` | `string` | `""` | Embeddings endpoint URL |
-| `embedding.model` | `string` | `"text-embedding-3-small"` | Embedding model name |
+- `remember(topic, content, options)`: Persists rule with red-light checks, conflict resolution, and optional `{ verified: true }` certification.
+- `correct(topic, newContent, reason)`: Explicitly corrects or supersedes outdated knowledge, recording an audit trail.
+- `recall(query, topK)`: Hybrid RRF recall with verification bonus and recency decay.
+- `dream()`: Consolidates duplicate fragments and optimizes memory budget.
+- `forget(topic)`: Deletes specified memory item.
 
 ---
 
