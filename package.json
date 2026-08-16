@@ -1,6 +1,6 @@
 {
   "name": "@shion-lab/dsh-plugin-memory",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "type": "module",
   "description": "Industrial-grade 4-tier cognitive memory, red-light guard, and vector semantic engine for DeepSeek Harness (dsh).",
   "main": "dist/index.js",
@@ -19,8 +19,9 @@
   },
   "scripts": {
     "build": "tsc",
+    "prepare": "tsc",
     "prepack": "tsc",
-    "test": "node --test test/memory.test.mjs"
+    "test": "node --experimental-strip-types --test test/memory.test.mjs"
   },
   "keywords": [
     "deepseek",
